@@ -34,6 +34,24 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   must keep the same pass/fail set as the bare tag.
 - Never `git reset --hard origin/main` to resolve a local-patch conflict.
 
+## Cron preflight trusts sandbox-held credential files
+
+- `cron/scheduler_preflight.py::_preflight_check_skills(job, cfg)` + `_job_terminal_backend(cfg)`. When the job's
+  own profile uses the docker terminal backend (`terminal.backend` of the config the scheduler loaded for the
+  job's home, else the scope-aware `TERMINAL_ENV`), a skill verdict whose ONLY gap is
+  `missing_credential_files` does not block the job. Missing env vars or commands still block; other backends
+  keep upstream's behaviour.
+- Why: our bots keep google-workspace's `google_token.json` / `google_client_secret.json` in the persistent
+  sandbox home (`sandboxes/docker/default/home/.hermes`, mounted at `/root/.hermes`), where the skill reads and
+  refreshes them. `skill_view` checks only the host HERMES_HOME, so v0.23.1's new cron preflight recorded
+  `blocked_config` for ~59 jobs on 24 bots (2026-11-15). Copying or symlinking the files into the host home is
+  not a fix: a present host file is bind-mounted READ-ONLY at `/root/.hermes/google_token.json`
+  (`tools/environments/docker.py::_readonly_skill_mount_args`) and the skill's in-place token refresh
+  (`google_api.py`/`gws_bridge.py` `write_text`) then fails. `cron.preflight: false` would also work but drops
+  the provider-key and delivery checks.
+- Upstream issue candidate: credential-file readiness should consider the sandbox home for persistent docker.
+- Tests: `tests/cron/test_preflight_sandbox_credentials.py`, plus `tests/cron/test_preflight_*.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

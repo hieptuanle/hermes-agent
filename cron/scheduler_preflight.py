@@ -316,14 +316,35 @@ _SKILL_MISSING_FIELDS = (
     ("missing_credential_files", "credential file {}"))
 
 
-def _preflight_check_skills(job: dict) -> Optional[str]:
+def _job_terminal_backend(cfg: Optional[dict]) -> str:
+    """4handy local patch (LOCAL_PATCHES.md "Cron preflight trusts sandbox-held credential files"): the
+    terminal backend of the job's own profile: ``terminal.backend`` of the config the scheduler loaded
+    for the job's home, else the scope-aware ``TERMINAL_ENV`` (never the raw process env)."""
+    terminal = cfg.get("terminal") if isinstance(cfg, dict) else None
+    backend = terminal.get("backend") if isinstance(terminal, dict) else None
+    if not backend:
+        try:
+            from tools.terminal_scope import terminal_env
+            backend = terminal_env("TERMINAL_ENV", "local")
+        except Exception:
+            backend = "local"
+    return str(backend or "local").strip().lower()
+
+
+def _preflight_check_skills(job: dict, cfg: Optional[dict] = None) -> Optional[str]:
     """Block only on an affirmative ``setup_needed`` verdict from ``skill_view``; skills that fail
-    to load fall through to ``_build_job_prompt``'s skipped-skill handling (fail-open)."""
+    to load fall through to ``_build_job_prompt``'s skipped-skill handling (fail-open).
+
+    4handy local patch: under the docker backend a skill's ``required_credential_files`` may live in the
+    persistent sandbox home (``/root/.hermes`` = ``sandboxes/docker/<key>/home/.hermes``), where the skill
+    itself reads and refreshes them; ``skill_view`` only looks in the host HERMES_HOME. So for docker a
+    verdict whose only gap is credential files does not block. Missing env vars or commands still do."""
     from cron.scheduler_prompt import _job_skill_names
     skill_names = _job_skill_names(job)
     if not skill_names:
         return None
     from tools.skills_tool import skill_view
+    sandbox_held_files = _job_terminal_backend(cfg) == "docker"
     for skill_name in skill_names:
         try:
             payload = json.loads(skill_view(skill_name))
@@ -335,8 +356,14 @@ def _preflight_check_skills(job: dict) -> Optional[str]:
             missing = [
                 fmt.format(name)
                 for key, fmt in _SKILL_MISSING_FIELDS
+                if not (sandbox_held_files and key == "missing_credential_files")
                 for name in payload.get(key) or []
             ]
+            if sandbox_held_files and not missing and payload.get("missing_credential_files"):
+                logger.debug("preflight: skill %r credential files %s not on the host; docker backend keeps "
+                             "them in the sandbox home — not blocking", skill_name,
+                             payload.get("missing_credential_files"))
+                continue
             detail = ", ".join(missing) or "required setup incomplete"
             return (
                 f"attached skill '{skill_name}' is not ready: missing "
@@ -410,7 +437,7 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     """
     for name, check in (
         ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
-        ("skills", lambda: _preflight_check_skills(job)),
+        ("skills", lambda: _preflight_check_skills(job, cfg)),
         ("delivery", lambda: _preflight_check_delivery(job))):
         try:
             reason = check()
