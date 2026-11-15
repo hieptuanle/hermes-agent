@@ -52,6 +52,26 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Upstream issue candidate: credential-file readiness should consider the sandbox home for persistent docker.
 - Tests: `tests/cron/test_preflight_sandbox_credentials.py`, plus `tests/cron/test_preflight_*.py`.
 
+## Sanitized skill copies are stable per source (docker skills mounts)
+
+- `tools/credential_files.py::_safe_skills_path` + `_sync_sanitized_tree` + `_skills_copy_file_lock`. A skills root
+  that contains any symlink is still replaced by a regular-files-only copy, but the copy now lives at
+  `<HERMES_HOME>/cache/skills-safe/<name>-<sha256(realpath)[:16]>`, is refreshed in place (changed files via temp +
+  `os.replace`, removed entries pruned) under a thread lock plus a `flock` beside it, and is never deleted.
+- Why: upstream (v0.19.1 and v0.23.1 alike) kept ONE per-process `mkdtemp` slot that each call `rmtree`'d first.
+  (1) A profile whose local `skills/` AND an `external_dirs` entry both hold symlinks lost the first copy before
+  docker checked it: "Docker: skipping skills mount — source is not a directory", so `/root/.hermes/skills` (with
+  google-workspace `scripts/`) was missing in the sandbox. On cloudzone: 9 docker profiles (local skills symlink
+  `erp-data-retrieval`/`erp-database`/`google-workspace` SKILL.md + `shared-skills` symlinks `erp-cli`/`outline-cli`).
+  (2) Persistent containers reused across environment constructions kept bind mounts to copies that the next
+  construction or process exit deleted, so `/root/.hermes/external_skills/0` (shared-skills scripts) went empty.
+- The mount source path changes from the tempdir to `cache/skills-safe/…`, so the reuse fingerprint changes once
+  for profiles with a symlinked root: their next terminal use starts a fresh sandbox container (the old one stays
+  until removed by hand or by the reaper).
+- Tests: `tests/tools/test_skills_safe_copy_stable.py` (5 of 6 fail on the bare tag), plus
+  `tests/tools/test_credential_files.py`, `tests/tools/test_docker_environment.py`, `tests/tools/test_file_sync.py`.
+- Upstream issue candidate: same bug on upstream main.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

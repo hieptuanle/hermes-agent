@@ -11,6 +11,7 @@ import logging
 import os
 import posixpath
 import stat
+import threading
 import time
 from contextvars import ContextVar
 from pathlib import Path
@@ -34,8 +35,9 @@ _registered_files_var: ContextVar[dict[str, str]] = ContextVar("_registered_file
 
 # Cache for config-based file list, one entry per profile home (tests reset it).
 _config_files: dict[str, list[dict[str, str]]] = {}
-# Reused across calls so sanitized skill copies don't accumulate.
-_safe_skills_tempdir: Path | None = None
+# 4handy local patch: serialises in-process refreshes of the stable sanitized skill copies
+# (``_safe_skills_path``); a file lock next to each copy covers other processes on the same home.
+_safe_skills_lock = threading.Lock()
 
 
 def _get_registered() -> dict[str, str]:
@@ -201,37 +203,109 @@ def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[di
     """Directory mount entries for all skill dirs (local + external + project).
 
     Bind mounts follow symlinks, so a dir containing any symlink is replaced by a sanitized
-    temp copy (regular files only); symlink-free dirs are returned directly, zero overhead.
+    copy (regular files only); symlink-free dirs are returned directly, zero overhead.
     """
     return [_mount(_safe_skills_path(d), cp) for d, cp in _skill_dir_roots(container_base)]
 
 
 def _safe_skills_path(skills_dir: Path) -> str:
-    """Return *skills_dir* if symlink-free, else a sanitized temp copy (same exclusions as sync)."""
-    global _safe_skills_tempdir
+    """Return *skills_dir* if symlink-free, else a sanitized copy (same exclusions as sync).
 
+    4handy local patch: the copy lives at a stable per-source path,
+    ``<HERMES_HOME>/cache/skills-safe/<name>-<sha256(realpath)[:16]>``, refreshed in place and never
+    deleted. Upstream kept ONE per-process ``mkdtemp`` slot that every call ``rmtree``'d first, so
+    (1) with two symlinked roots (local ``skills/`` plus a symlinked ``external_dirs`` entry) the first
+    copy was already gone when docker checked it, and ``/root/.hermes/skills`` was never mounted; and
+    (2) a persistent container reused across processes kept a bind mount to a copy that the next
+    environment construction (or process exit) deleted, so the mount turned empty.
+    """
     symlinks = [p for p in skills_dir.rglob("*") if p.is_symlink()]
     if not symlinks:
         return str(skills_dir)
     for link in symlinks:
         logger.warning("credential_files: skipping symlink in skills dir: %s -> %s", link, os.readlink(link))
 
-    import atexit
-    import shutil
-    import tempfile
+    import hashlib
 
-    if _safe_skills_tempdir and _safe_skills_tempdir.is_dir():
-        shutil.rmtree(_safe_skills_tempdir, ignore_errors=True)
-    safe_dir = _safe_skills_tempdir = Path(tempfile.mkdtemp(prefix="hermes-skills-safe-"))
-
-    for base, files in _walk_skill_tree(skills_dir):
-        (safe_dir / base.relative_to(skills_dir)).mkdir(parents=True, exist_ok=True)
-        for item in files:
-            shutil.copy2(str(item), str(safe_dir / item.relative_to(skills_dir)))
-
-    atexit.register(lambda: safe_dir.is_dir() and shutil.rmtree(safe_dir, ignore_errors=True))
-    logger.info("credential_files: created symlink-safe skills copy at %s", safe_dir)
+    real = os.path.realpath(skills_dir)
+    digest = hashlib.sha256(real.encode("utf-8", "surrogateescape")).hexdigest()[:16]
+    name = "".join(c if c.isalnum() or c in "-_." else "_" for c in Path(real).name)[:40] or "skills"
+    safe_dir = get_hermes_home() / "cache" / "skills-safe" / f"{name}-{digest}"
+    with _safe_skills_lock, _skills_copy_file_lock(safe_dir.parent / f".{safe_dir.name}.lock"):
+        _sync_sanitized_tree(skills_dir, safe_dir)
+    logger.info("credential_files: refreshed symlink-safe skills copy at %s", safe_dir)
     return str(safe_dir)
+
+
+class _skills_copy_file_lock:
+    """Advisory ``flock`` on *path* (POSIX). Best effort: no-op where ``fcntl`` is unavailable."""
+
+    def __init__(self, path: Path):
+        self._path, self._fd = path, None
+
+    def __enter__(self):
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover - Windows
+            return self
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        if self._fd is not None:
+            os.close(self._fd)  # closing releases the flock
+            self._fd = None
+        return False
+
+
+def _sync_sanitized_tree(src_root: Path, dst_root: Path) -> None:
+    """Make *dst_root* hold exactly *src_root*'s skill content (regular, non-symlink files, minus
+    ``EXCLUDED_SKILL_DIRS``), updating in place so a running container's bind mount of *dst_root*
+    stays valid. Changed files are written to a temp name and ``os.replace``'d (readers never see a
+    half-written file); entries that left the source are removed."""
+    import shutil
+
+    want_dirs: set[Path] = set()
+    want_files: set[Path] = set()
+    dst_root.mkdir(parents=True, exist_ok=True)
+    for base, files in _walk_skill_tree(src_root):
+        rel_dir = base.relative_to(src_root)
+        want_dirs.add(rel_dir)
+        dst_dir = dst_root / rel_dir
+        if dst_dir.is_symlink() or (dst_dir.exists() and not dst_dir.is_dir()):
+            dst_dir.unlink()
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        for item in files:
+            rel = item.relative_to(src_root)
+            want_files.add(rel)
+            target = dst_root / rel
+            try:
+                st_src, st_dst = item.stat(), target.lstat()
+                if (stat.S_ISREG(st_dst.st_mode) and st_dst.st_size == st_src.st_size
+                        and st_dst.st_mtime_ns == st_src.st_mtime_ns):
+                    continue
+            except FileNotFoundError:
+                pass
+            if target.is_dir() and not target.is_symlink():
+                shutil.rmtree(target)
+            tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+            shutil.copy2(str(item), str(tmp))
+            os.replace(tmp, target)
+    # Prune bottom-up: anything not in the source any more (files, dirs, stray links, crashed temps).
+    for dirpath, dirnames, filenames in os.walk(dst_root, topdown=False):
+        base = Path(dirpath)
+        for n in filenames:
+            p = base / n
+            if p.relative_to(dst_root) not in want_files:
+                p.unlink(missing_ok=True)
+        for n in dirnames:
+            p = base / n
+            if p.is_symlink():
+                p.unlink(missing_ok=True)
+            elif p.relative_to(dst_root) not in want_dirs:
+                shutil.rmtree(p, ignore_errors=True)
 
 
 def iter_skills_files(container_base: str = "/root/.hermes") -> list[dict[str, str]]:
