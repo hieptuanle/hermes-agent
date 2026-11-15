@@ -72,6 +72,23 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `tests/tools/test_credential_files.py`, `tests/tools/test_docker_environment.py`, `tests/tools/test_file_sync.py`.
 - Upstream issue candidate: same bug on upstream main.
 
+## google-workspace setup.py continues without `pm` when the Google libraries import
+
+- `skills/productivity/google-workspace/scripts/setup.py`: `_google_imports_available()` (imports
+  `googleapiclient.discovery`, `google.oauth2.credentials`, `google.auth.transport.requests`,
+  `google_auth_oauthlib.flow`). When `pm is None`, `_ensure_deps()` returns and `install_deps()` succeeds without
+  installing anything if they import; otherwise upstream's refusal stays ("Run this script in the Hermes
+  environment", never an ambient pip install).
+- Why: v0.23.1 made the script install/activate the Google extra only through Hermes' `pm`. Docker sandboxes have
+  no `pm`, so `--check`, `--auth-url`, `--auth-code`, `--revoke` exited 1 even with the libraries present. On
+  cloudzone the libraries come from `~/.hermes/shared-tools/pylib/py311` (built with the sandbox image), reached via
+  `hermes-pylib.pth` in each sandbox home's user site (2026-11-15).
+- Bundled-skill change: reaches a profile only where its copy still matches the bundled origin (`.bundled_manifest`),
+  at gateway start or with `HERMES_HOME=<home> hermes --run-module tools.skills_sync`. User-modified copies keep
+  their own (v0.19.1-style, pip-installing) setup.py.
+- Tests: `tests/skills/test_google_workspace_setup_sandbox_deps.py` (all 5 fail on the bare script), plus
+  `tests/skills/test_google_workspace_setup_deps.py`, `tests/skills/test_google_workspace_setup.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

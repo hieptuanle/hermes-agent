@@ -95,9 +95,35 @@ def _format_missing_scopes(missing_scopes: list[str]) -> str:
     )
 
 
+# 4handy local patch: the modules this script imports lazily. In a docker sandbox there is no Hermes `pm`, but
+# the Google libraries can still be importable (cloudzone puts a shared target dir on the sandbox user site via
+# hermes-pylib.pth). Then there is nothing to install or activate, so OAuth/check must go on instead of exiting.
+_GOOGLE_MODULES = (
+    "googleapiclient.discovery",
+    "google.oauth2.credentials",
+    "google.auth.transport.requests",
+    "google_auth_oauthlib.flow",
+)
+
+
+def _google_imports_available() -> bool:
+    """True when every Google module this script needs imports in the current interpreter."""
+    import importlib
+
+    try:
+        for name in _GOOGLE_MODULES:
+            importlib.import_module(name)
+    except Exception:
+        return False
+    return True
+
+
 def install_deps():
     """Sync Hermes' declared Google extra, ready for the next process."""
     if pm is None:
+        if _google_imports_available():
+            print("Google dependencies already importable; nothing to install.")
+            return True
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         return False
     try:
@@ -112,6 +138,8 @@ def install_deps():
 def _ensure_deps():
     """Let PM check imports and stop if activation needs a new process."""
     if pm is None:
+        if _google_imports_available():
+            return
         print("ERROR: Run this script in the Hermes environment; use hermes setup first.")
         sys.exit(1)
     try:
