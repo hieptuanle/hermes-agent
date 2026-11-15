@@ -1347,6 +1347,39 @@ def _apply_parked_branch_guard(
     return False, True, switch_block_reason
 
 
+def _local_only_commit_count(git_cmd) -> int | None:
+    """4handy local patch: commits in HEAD that no ``origin`` remote-tracking ref and no ``v*`` release
+    tag contains, i.e. local patches (a push to another remote such as ``fork`` still counts as local).
+    None when git cannot answer."""
+    result = _git_run(git_cmd, ["rev-list", "--count", "HEAD", "--not", "--remotes=origin", "--tags=v*"])
+    count = (result.stdout or "").strip()
+    return int(count) if result.returncode == 0 and count.isdigit() else None
+
+
+def _refuse_dropping_local_commits(git_cmd, *, keeps_local_commits, switch_branch, _windows_gateway_resume) -> None:
+    """4handy local patch (LOCAL_PATCHES.md "Updater never drops local patches"): refuse an update that would
+    move the running checkout off local-only commits. Upstream lands a release DETACHED at its tag, switches a
+    parked branch back to main, or resets a diverged same-name branch: each keeps the commits in a ref but
+    silently runs code without them. Only ``updates.parked_branch_strategy: update_in_place`` (merge into the
+    branch) keeps them; ``--switch-branch`` is the explicit one-off override for the branch path.
+    Armed only in a checkout that declares its patches in a root ``LOCAL_PATCHES.md``."""
+    if keeps_local_commits or switch_branch:
+        return
+    if not (Path(_m().PROJECT_ROOT) / "LOCAL_PATCHES.md").is_file():
+        return
+    count = _local_only_commit_count(git_cmd)
+    if not count:
+        return
+    print(f"✗ HEAD carries {count} local commit(s) that are on no origin branch and in no release tag;")
+    print("  this update would run code without them (release tags land detached, other branches reset).")
+    print(f"  Port them onto the new release by hand: cd {_m().PROJECT_ROOT} && git log --oneline "
+          "HEAD --not --remotes=origin --tags='v*'  (see LOCAL_PATCHES.md).")
+    print("  No update was applied; your install is unchanged.")
+    _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+    _record_stop("parked_branch_blocked")
+    sys.exit(1)
+
+
 def _prepare_checkout_for_update(
     git_cmd, branch, current_branch, *, is_fork, assume_yes, gateway_mode, gw_input_fn,
     switch_branch, target_ref=None, _windows_gateway_resume):
@@ -1364,6 +1397,11 @@ def _prepare_checkout_for_update(
         parked_branch_switched, in_place_update, switch_block_reason = _apply_parked_branch_guard(
             git_cmd, branch, current_branch, switch_branch=switch_branch,
             _windows_gateway_resume=_windows_gateway_resume)
+    # A release's in_place_update means "detached at the tag", not "merged into the branch". A detached
+    # HEAD keeps upstream's behaviour (its unique commits are parked under refs/hermes-update-backups/).
+    _refuse_dropping_local_commits(
+        git_cmd, keeps_local_commits=(in_place_update and not release_tag) or current_branch == "HEAD",
+        switch_branch=switch_branch and not release_tag, _windows_gateway_resume=_windows_gateway_resume)
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
