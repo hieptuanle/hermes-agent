@@ -25,9 +25,11 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   (`git rev-list HEAD --not --remotes=origin --tags='v*'`) and the update would move the tree off them:
   a stable release (lands detached at the tag), a parked-branch switch back to `main`, a same-name reset.
 - Allowed: `updates.parked_branch_strategy: update_in_place` (merge into the branch), `--switch-branch` on the
-  branch path, a detached HEAD (upstream parks it under `refs/hermes-update-backups/`).
-- While the latest stable tag is already inside HEAD, upstream's `forward_only` pin makes `hermes update` a
-  no-move run (deps, migrations, restarts) and the guard never fires. It fires once a newer release ships.
+  branch path, a detached HEAD (upstream parks it under `refs/hermes-update-backups/`), and any target that
+  already contains HEAD (`git merge-base --is-ancestor HEAD <target>`).
+- While the latest stable tag is already inside HEAD, upstream's `forward_only` pin makes HEAD itself the target:
+  a no-move run (deps, migrations, restarts) that the guard lets through. Until 2026-11-15 the guard refused
+  that run too (cloudzone upgrade day; worked around with a detached HEAD). It fires once a newer release ships.
 - Tests: `tests/hermes_cli/test_update_keeps_local_patches.py`; upstream `tests/hermes_cli/test_update_*.py`
   must keep the same pass/fail set as the bare tag.
 - Never `git reset --hard origin/main` to resolve a local-patch conflict.

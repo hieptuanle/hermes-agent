@@ -109,3 +109,22 @@ def test_guard_is_inert_without_local_patches_md(patched_checkout):
     _commit(checkout, "other.txt", "x\n")
     plan = _prepare("4handy/v1.0.0", target_ref="v1.1.0")
     assert plan.in_place_update is True
+
+
+def test_forward_only_pin_to_head_is_allowed(patched_checkout):
+    """Checkout newer than the latest release: the forward-only pin makes HEAD itself the target, so nothing
+    moves and the local commits stay live (2026-11-15 cloudzone: the guard refused this no-op completion run)."""
+    checkout, patch = patched_checkout
+    plan = _prepare("4handy/v1.0.0", target_ref=patch)
+    assert plan.commit_count == 0
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == patch
+    assert _git(checkout, "branch", "--show-current").stdout.strip() == "4handy/v1.0.0"
+
+
+def test_target_containing_head_is_allowed(patched_checkout):
+    """A target that descends from HEAD keeps every local commit."""
+    checkout, patch = patched_checkout
+    later = _commit(checkout, "later.txt", "later\n")
+    _git(checkout, "checkout", "-q", "--detach", patch)
+    _git(checkout, "checkout", "-q", "-B", "4handy/v1.0.0")
+    _prepare("4handy/v1.0.0", target_ref=later)

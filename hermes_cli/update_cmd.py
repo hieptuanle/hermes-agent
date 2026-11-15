@@ -1356,14 +1356,19 @@ def _local_only_commit_count(git_cmd) -> int | None:
     return int(count) if result.returncode == 0 and count.isdigit() else None
 
 
-def _refuse_dropping_local_commits(git_cmd, *, keeps_local_commits, switch_branch, _windows_gateway_resume) -> None:
+def _refuse_dropping_local_commits(git_cmd, *, keeps_local_commits, switch_branch, _windows_gateway_resume,
+                                   target_ref=None) -> None:
     """4handy local patch (LOCAL_PATCHES.md "Updater never drops local patches"): refuse an update that would
     move the running checkout off local-only commits. Upstream lands a release DETACHED at its tag, switches a
     parked branch back to main, or resets a diverged same-name branch: each keeps the commits in a ref but
     silently runs code without them. Only ``updates.parked_branch_strategy: update_in_place`` (merge into the
     branch) keeps them; ``--switch-branch`` is the explicit one-off override for the branch path.
-    Armed only in a checkout that declares its patches in a root ``LOCAL_PATCHES.md``."""
+    Armed only in a checkout that declares its patches in a root ``LOCAL_PATCHES.md``. A target that
+    already contains HEAD keeps every local commit: the forward-only pin (checkout newer than the latest
+    release, target = HEAD itself) and any fast-forward onto a descendant of HEAD pass."""
     if keeps_local_commits or switch_branch:
+        return
+    if target_ref and _git_run(git_cmd, ["merge-base", "--is-ancestor", "HEAD", target_ref]).returncode == 0:
         return
     if not (Path(_m().PROJECT_ROOT) / "LOCAL_PATCHES.md").is_file():
         return
@@ -1401,7 +1406,8 @@ def _prepare_checkout_for_update(
     # HEAD keeps upstream's behaviour (its unique commits are parked under refs/hermes-update-backups/).
     _refuse_dropping_local_commits(
         git_cmd, keeps_local_commits=(in_place_update and not release_tag) or current_branch == "HEAD",
-        switch_branch=switch_branch and not release_tag, _windows_gateway_resume=_windows_gateway_resume)
+        switch_branch=switch_branch and not release_tag, _windows_gateway_resume=_windows_gateway_resume,
+        target_ref=target_ref)
 
     if not release_tag and not in_place_update and current_branch == "HEAD" != branch:
         print(f"  ⚠ Currently on detached HEAD — switching to {branch} for update...")
