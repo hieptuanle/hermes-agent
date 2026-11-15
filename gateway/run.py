@@ -477,6 +477,16 @@ def _non_conversational_metadata(
     return merged
 
 
+def _tool_progress_metadata(
+    metadata: Optional[dict[str, Any]] = None, *, platform: Any = None) -> Optional[dict[str, Any]]:
+    """Mark Mattermost tool-progress posts for silent delivery (``POST /posts?silent=true``, 4handy)."""
+    if _gateway_platform_value(platform) != "mattermost":
+        return metadata
+    merged = dict(metadata or {})
+    merged["silent"] = True
+    return merged
+
+
 def _interim_metadata(metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     """Mark a mid-turn status/advisory send as NOT the turn-final.
 
