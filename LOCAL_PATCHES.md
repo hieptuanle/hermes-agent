@@ -115,6 +115,30 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `tests/tools/test_docker_environment.py`, `tests/cron/test_cron_prompt_injection_skill.py`.
 - Upstream issue candidate: unchanged up to `v0.23.1+canary.20261114` (skill_dir is host-only for every container backend).
 
+## SKILL.md size cap is configurable and growth-only
+
+- Config `skills.max_content_chars` (default 100000 in `hermes_cli/config_defaults.py` = upstream's fixed
+  `MAX_SKILL_CONTENT_CHARS`; `<= 0`, a bool or a non-integer also means 100000), read per write from the
+  read-only merged config of the active profile (`tools/skill_manager_tool.py::_skill_md_char_cap`).
+- Contract (`_validate_content_size(content, label, before=None)`): a SKILL.md target (label's basename
+  `SKILL.md`) over the cap is refused only when it is new (create) or longer than its current text (`before`).
+  A write that shrinks or keeps the size of an over-cap SKILL.md always passes, so the background review and
+  the curator can trim. Supporting files (`references/` etc.) keep the fixed 100k chars / 1 MiB limits, so the
+  fix the refusal message names (move depth into `references/<topic>.md` via `write_file`, leave a pointer)
+  always works.
+- Where: `_guarded_write` decides it for every SKILL.md writer against the text on disk (create, edit, patch,
+  `write_file`/`patch` with `file_path='SKILL.md'`); `_create_skill` and `_patch_skill` also check early (patch
+  with `before`); `_edit_skill` and `_write_file` no longer check SKILL.md size before the current text is known.
+- Why: the post-turn background review kept patching business skills until SKILL.md hit 100k chars (15 at
+  99.6k-100k, 8 at 75-95k on cloudzone 2026-11-16); every `skill_view` of one loads ~36k tokens. The fleet sets
+  `skills.max_content_chars: 40000` in every profile's config.yaml.
+- Rollback: remove the key from the configs (backups `config.yaml.bak-skillcap-20261116`) for upstream
+  behaviour with this code; or reset the branch to the commit before this patch (the key is ignored by older
+  code) and restart the gateways.
+- Tests: `tests/tools/test_skill_size_cap_config.py` (4 fail with growth-only disabled), plus
+  `tests/tools/test_skill_size_limits.py`, `tests/tools/test_skill_manager_tool.py`, `tests/ci/test_docs_drift.py`
+  (key documented in `website/docs/user-guide/configuration.md`).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

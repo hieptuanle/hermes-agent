@@ -184,7 +184,42 @@ def _description_budget_error(content: str, before: Optional[str] = None) -> Opt
         f"Move detail into the skill body.")
 
 
-def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[str]:
+def _skill_md_char_cap() -> int:
+    """``skills.max_content_chars`` (4handy local patch): positive int, else MAX_SKILL_CONTENT_CHARS."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
+        value = cfg_get(load_config_readonly(), "skills", "max_content_chars", default=None)
+    except Exception:
+        logger.debug("skills.max_content_chars read failed; using %d", MAX_SKILL_CONTENT_CHARS, exc_info=True)
+        return MAX_SKILL_CONTENT_CHARS
+    if isinstance(value, bool):
+        return MAX_SKILL_CONTENT_CHARS
+    try:
+        cap = int(value)
+    except (TypeError, ValueError):
+        return MAX_SKILL_CONTENT_CHARS
+    return cap if cap > 0 else MAX_SKILL_CONTENT_CHARS
+
+
+def _validate_content_size(content: str, label: str = "SKILL.md",
+                           before: Optional[str] = None) -> Optional[str]:
+    """Size gate for agent writes. A SKILL.md (``label`` ending in SKILL.md) uses the configurable
+    ``skills.max_content_chars`` cap, growth-only: with ``before`` (the current SKILL.md) a write over
+    the cap is refused only when it is longer than ``before``, so an over-cap skill can always be
+    trimmed. Supporting files keep the fixed MAX_SKILL_CONTENT_CHARS limit."""
+    if Path(label).name == "SKILL.md":
+        cap = _skill_md_char_cap()
+        if len(content) <= cap or (before is not None and len(content) <= len(before)):
+            return None
+        grown = (f"This write would grow it from {len(before):,} to {len(content):,} characters; "
+                 if before is not None else
+                 f"It is {len(content):,} characters; a new SKILL.md must fit the cap, and ")
+        return (
+            f"{label} is over the size cap of {cap:,} characters (skills.max_content_chars). {grown}"
+            f"writes that make an over-cap SKILL.md bigger are refused. Fix: move topical depth into "
+            f"references/<topic>.md with skill_manage(action='write_file', file_path='references/<topic>.md', "
+            f"file_content=...) and leave a one-line pointer to it in SKILL.md. A patch or edit that makes "
+            f"SKILL.md smaller is always allowed.")
     if len(content) > MAX_SKILL_CONTENT_CHARS:
         return (
             f"{label} content is {len(content):,} characters (limit: {MAX_SKILL_CONTENT_CHARS:,}). "
@@ -414,6 +449,10 @@ def _guarded_write(name: str, skill_dir: Path, target: Path, action: str, label:
         if read_guard := _background_review_read_before_write_guard(name, target, action, label):
             return read_guard
         original = target.read_text(encoding="utf-8-sig")
+    # 4handy local patch: every SKILL.md writer (create/edit/patch/write_file) lands here with the
+    # current text, so the growth-only size cap is decided once, against what is on disk.
+    if target.name == "SKILL.md" and (err := _validate_content_size(content, label, before=original)):
+        return _err(err)
     if target == skill_dir / "SKILL.md" and (err := _description_budget_error(content, before=original)):
         return _err(err)
     from hermes_constants import mkdir_under_hermes_home
@@ -508,7 +547,8 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
 
 def _edit_skill(name: str, content: str) -> dict[str, Any]:
     """Replace the SKILL.md of any existing skill (full rewrite)."""
-    if err := _validate_frontmatter(content) or _validate_content_size(content):
+    # Size is checked in _guarded_write against the current SKILL.md (growth-only cap).
+    if err := _validate_frontmatter(content):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "edit")
     # SKILL.md always exists here (_find_skill requires it), so a blocked scan restores it.
@@ -555,7 +595,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str | N
             from tools.fuzzy_match import format_no_match_hint
             match_error += format_no_match_hint(match_error, match_count, old_string, content)
         return _err(match_error) | {"file_preview": _clip(content, 500, "...")}
-    if err := _validate_content_size(new_content, label=target_label):
+    if err := _validate_content_size(new_content, label=target_label, before=content):
         return _err(err)
     if not file_path and (err := _validate_frontmatter(new_content)):
         return _err(f"Patch would break SKILL.md structure: {err}")
@@ -625,7 +665,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> dict[str, Any]:
     if (content_bytes := len(file_content.encode("utf-8"))) > MAX_SKILL_FILE_BYTES:
         return _err(f"File content is {content_bytes:,} bytes (limit: {MAX_SKILL_FILE_BYTES:,} "
                     f"bytes / 1 MiB). Consider splitting into smaller files.")
-    if err := _validate_content_size(file_content, label=file_path):
+    # A SKILL.md target is size-checked in _guarded_write, where its current text is known.
+    if Path(file_path).name != "SKILL.md" and (err := _validate_content_size(file_content, label=file_path)):
         return _err(err)
     skill_dir, guard = _locate_for_write(name, "write_file", " Create it first with action='create'.")
     if guard:

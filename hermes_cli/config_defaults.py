@@ -1451,6 +1451,10 @@ DEFAULT_CONFIG = {
         # host-unapproved skill-author code; community hub installs never auto-execute (#63307).
         "inline_shell": False,
         "inline_shell_timeout": 10,  # seconds per !`cmd` snippet
+        # 4handy local patch: SKILL.md size cap for skill_manage writes (chars; <= 0 / invalid = 100000).
+        # Growth-only on existing SKILL.md: a write over the cap is refused only when it makes the
+        # file bigger, so over-cap skills can still be trimmed. Supporting files keep the fixed limits.
+        "max_content_chars": 100_000,
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
         # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
         # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.

@@ -908,6 +908,17 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](./features/skills.md#gating-agent-skill-writes-skillswrite_approval).
 
+### SKILL.md size cap
+
+`skills.max_content_chars` (4handy local patch) caps how large `skill_manage` may make a SKILL.md:
+
+```yaml
+skills:
+  max_content_chars: 100000   # default; <= 0 or not an integer = 100000
+```
+
+A new SKILL.md must fit the cap. For an existing SKILL.md the cap is **growth-only**: a write that leaves it over the cap is refused only when it makes the file bigger, so an over-cap skill can always be trimmed (move depth into `references/<topic>.md` with `write_file` and leave a one-line pointer). Supporting files keep the fixed 100,000-char / 1 MiB limits.
+
 ## Memory Configuration
 
 ```yaml
