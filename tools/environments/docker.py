@@ -536,6 +536,15 @@ def _ensure_docker_available() -> None:
                  "or run `hermes setup terminal` to switch to Local.")
 
 
+def _bound_session_env() -> dict[str, str]:
+    """[4handy] ``gateway.session_context.bound_session_env`` (lazy import, as local.py does); ``{}`` if unavailable."""
+    try:
+        from gateway.session_context import bound_session_env
+    except Exception:
+        return {}
+    return bound_session_env()
+
+
 def _name_only_env_args(names) -> list[str]:
     """``-e KEY`` flags (no values): the docker CLI resolves values from its own env,
     so secrets live in owner-readable /proc/*/environ instead of world-readable cmdline."""
@@ -1121,6 +1130,15 @@ class DockerEnvironment(BaseEnvironment):
         elif self._profile_scoped_passthrough:
             runtime_args, unset_names, env_values = self._build_runtime_env_args_with_unsets()
             cmd.extend(runtime_args)
+        # [4handy] This turn's session context (who asked, which post, which cron job) on EVERY exec, as
+        # the local backend does for its children (local._inject_session_context_env): the vars are
+        # ContextVars, not env, so nothing else carries them into the container. Name-only ``-e`` flags,
+        # values in this docker client's own env (#96268); never os.environ, which one gateway shares across
+        # concurrent conversations. The snapshot strips them, so the next exec cannot inherit them.
+        session_values = _bound_session_env()
+        if session_values:
+            cmd.extend(_name_only_env_args(session_values))
+            env_values = {**env_values, **session_values}
         cmd += [self._container_id, *bash_argv(prepend_unset(cmd_string, unset_names), login)]
 
         client_env = self._docker_client_env(env_values)

@@ -119,6 +119,41 @@ def test_configured_and_forwarded_env_reach_the_container_and_nothing_else(docke
     assert r["output"].strip() == "s=from-config f=from-host n=unset"
 
 
+def test_concurrent_turns_each_see_their_own_session_in_one_container(docker_task, monkeypatch):
+    """[4handy] Two conversations share the profile's container; each exec sees ITS turn's sender and
+    post (bound ContextVars, not the gateway env), and nothing survives into a later unbound exec."""
+    import contextvars
+    import threading
+
+    from gateway import session_context
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setattr(session_context, "_session_context_engaged", session_context._session_context_engaged)
+    monkeypatch.setenv("HERMES_SESSION_ACTOR_ID", "uid-stale")
+    _run("true", docker_task)  # start the container + snapshot first
+    show = 'printf "%s|%s|%s" "${HERMES_SESSION_ACTOR_ID-unset}" "${HERMES_SESSION_MESSAGE_ID-unset}" "$(sleep 1)"'
+    barrier = threading.Barrier(2)
+    out = {}
+
+    def turn(actor, post):
+        def body():
+            tokens = set_session_vars(platform="mattermost", user_id=actor, user_name=actor, message_id=post)
+            try:
+                barrier.wait(timeout=30)
+                out[actor] = _run(show, docker_task)["output"].strip()
+            finally:
+                clear_session_vars(tokens)
+        contextvars.copy_context().run(body)
+
+    threads = [threading.Thread(target=turn, args=a) for a in (("uid-a", "post-a"), ("uid-b", "post-b"))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+    assert out == {"uid-a": "uid-a|post-a|", "uid-b": "uid-b|post-b|"}
+    assert _run(show, docker_task)["output"].strip() == "unset|unset|"
+
+
 def test_quoting_survives_the_docker_exec_hop(docker_task):
     payload = "it's \"quoted\" $HOME `tick` \\back"
     r = _run(f"printf '%s\\n' {shlex.quote(payload)}", docker_task)

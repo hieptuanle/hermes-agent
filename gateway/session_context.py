@@ -69,11 +69,18 @@ _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", de
 _CRON_AUTO_DELIVER_CHAT_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
 
+# [4handy] The cron job a run belongs to, set per run in cron ``_CronRunScope`` (ContextVars, so parallel
+# jobs don't clobber). Bridged into child processes like the other session vars so a tool can name the job
+# (the erp CLI writes "cron <name> (<id>)" as its audit reason). The HERMES_SESSION_ prefix keeps them out of
+# the shared shell snapshot (base_session_env strips ${!HERMES_SESSION_*}).
+_CRON_JOB_ID = ContextVar("HERMES_SESSION_CRON_JOB_ID", default=_UNSET)
+_CRON_JOB_NAME = ContextVar("HERMES_SESSION_CRON_JOB_NAME", default=_UNSET)
+
 # Legacy env-var name -> ContextVar for get_session_env (_SESSION_ASYNC_DELIVERY deliberately
 # absent: it is a bool capability, read via async_delivery_supported).
 _VAR_MAP = {var.name: var for var in (
     *_SESSION_VARS, _CRON_AUTO_DELIVER_PLATFORM, _CRON_AUTO_DELIVER_CHAT_ID,
-    _CRON_AUTO_DELIVER_THREAD_ID,
+    _CRON_AUTO_DELIVER_THREAD_ID, _CRON_JOB_ID, _CRON_JOB_NAME,
 )}
 
 
@@ -225,6 +232,20 @@ def _bound_session_value(name: str) -> Any:
         return ""  # another sender's input joined the running turn: it has no single actor any more
     var = _VAR_MAP.get(name)
     return _UNSET if var is None else var.get()
+
+
+def bound_session_env() -> dict[str, str]:
+    """[4handy] The session vars bound in THIS task (``""`` = explicitly cleared included), for a child
+    process that does not inherit the gateway env: a Docker ``exec`` (the local backend bridges the same
+    names via ``tools.environments.local._inject_session_context_env``). A var never bound here is left
+    out and NEVER read from ``os.environ``: one gateway serves many conversations at once, and its env
+    mirror may hold another turn's sender."""
+    out: dict[str, str] = {}
+    for name in _VAR_MAP:
+        value = _bound_session_value(name)
+        if value is not _UNSET:
+            out[name] = "" if value is None else str(value)
+    return out
 
 
 def get_session_env(name: str, default: str = "") -> str:
