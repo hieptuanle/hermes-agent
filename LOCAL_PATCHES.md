@@ -196,8 +196,10 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   the dashboard are operator surfaces and unchanged.
 - Docs: `website/docs/user-guide/features/kanban.md` "Board fence" (both keys, so `tests/ci/test_docs_drift.py`
   passes) and a note on the `/kanban` paragraph.
-- Rollback: unset the keys for upstream tool behaviour (`/kanban` stays off unless `chat_command: true`); or reset
-  the branch to the commit before this patch (older code ignores both keys) and restart the gateways one at a time.
+- Rollback: with this code, `kanban.board_fence: "*"` gives a profile the upstream tool behaviour (unset is NOT
+  upstream: a profile with the kanban toolset and no `board_fence` has its kanban tools refused, rule 0), and
+  `kanban.chat_command: true` reopens `/kanban` on a bot that is not fenced. Or reset the branch to the commit
+  before this patch (older code ignores both keys) and restart the gateways one at a time.
 - Tests: `tests/tools/test_kanban_board_fence.py`, `tests/gateway/test_kanban_board_fence_gateway.py` (87 of 106
   fail on the bare branch; the 19 that pass are the cases that keep upstream behaviour), plus
   `tests/hermes_cli/test_kanban_notify.py` (its two `/kanban create` tests now opt in with `chat_command: true`),
