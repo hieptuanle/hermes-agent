@@ -353,6 +353,14 @@ class GatewaySlashCommandsMixin(
         """Handle /kanban — delegate to the shared kanban CLI (DB work in a thread pool). Allowed
         while an agent runs: the board is profile-agnostic and never touches agent state."""
         from hermes_cli.kanban import run_slash
+        from hermes_cli.kanban_board_fence import chat_command_refusal
+
+        # Board fence, rules 5-6 (4handy local patch): the bot-owning profile must set
+        # kanban.chat_command: true and must not be fenced; anything unresolvable is refused.
+        refusal = chat_command_refusal(self._kanban_command_owner_home(event.source))
+        if refusal:
+            logger.warning("/kanban refused on this bot: %s", refusal)
+            return refusal
 
         # Strip the leading "/kanban" (with or without slash), leaving args.
         text = (event.text or "").strip().lstrip("/")
@@ -389,6 +397,30 @@ class GatewaySlashCommandsMixin(
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    def _kanban_command_owner_home(self, source) -> Optional[Path]:
+        """Home of the profile whose bot received *source*, resolved as the slash access policy does
+        (``gateway/slash_access.py`` ``policy_for_runner_source``): under ``multiplex_profiles`` the
+        transport (bot-owning) profile, a served one only when this gateway has its config loaded;
+        otherwise the launch home. ``None`` when it cannot be named (the caller refuses)."""
+        from hermes_constants import get_routing_process_hermes_home
+        try:
+            config = getattr(self, "config", None)
+            if getattr(config, "multiplex_profiles", False) and source is not None:
+                from gateway.session_identity import identity_of
+                from hermes_cli.profiles import get_profile_dir
+
+                identity = identity_of(source)
+                owner = identity.transport_profile if identity is not None else getattr(source, "profile", None)
+                primary = getattr(self, "_primary_profile_name", None) or "default"
+                if owner and owner != primary:
+                    if owner not in (getattr(self, "_profile_configs", None) or {}):
+                        return None
+                    return get_profile_dir(owner)
+            return get_routing_process_hermes_home()
+        except Exception:
+            logger.warning("/kanban: could not resolve the bot's profile", exc_info=True)
+            return None
 
     async def _kanban_auto_subscribe(self, event: MessageEvent, task_id: str, requested_board) -> bool:
         """Subscribe the event's chat to *task_id* notifications (notify+wake). False when the

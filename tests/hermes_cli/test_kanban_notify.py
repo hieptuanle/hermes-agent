@@ -606,6 +606,12 @@ async def test_notifier_wakes_origin_for_review_and_keeps_subscription(kanban_ho
     with kbc.connect() as conn:
         assert kbn.list_notify_subs(conn), "review is non-final; subscription must survive"
 
+def _enable_kanban_chat_command(home: Path) -> None:
+    """``/kanban`` in chat answers only with ``kanban.chat_command: true`` (4handy board fence,
+    rule 6); these tests drive the handler on the launch profile, so it opts in."""
+    (home / "config.yaml").write_text("kanban:\n  chat_command: true\n", encoding="utf-8")
+
+
 @pytest.mark.asyncio
 async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     """`/kanban --board <slug> create ...` must subscribe on that board.
@@ -619,6 +625,7 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
     from gateway.config import Platform
 
     kb.create_board("projx")
+    _enable_kanban_chat_command(kanban_home)
 
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True
@@ -695,6 +702,7 @@ async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
     from gateway.config import Platform
     from gateway.session import SessionSource, build_session_key
 
+    _enable_kanban_chat_command(kanban_home)
     runner = object.__new__(GatewayRunner)
     runner._owns_kanban_dispatcher_lock = lambda: True
     # user_id != user_id_alt is the whole point: the alt id is the canonical

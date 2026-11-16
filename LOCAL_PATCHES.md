@@ -159,6 +159,50 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Upstream issue candidate: docker (and ssh/modal/daytona) backends do not bridge `HERMES_SESSION_*` at
   `v0.23.1`.
 
+## Kanban board fence (`kanban.board_fence`, `kanban.chat_command`)
+
+- Why: boards are shared files under one root, so a chat agent with the kanban toolset could read or write any
+  board by naming it, and `/kanban` (`!kanban` on Mattermost) ran the whole kanban CLI for every user a bot
+  accepts: any board, any assignee, so any staff member could make any profile run a card with its ERP token.
+  The agent-box pilot (one board per box, `box-<owner>`) needs a wall. Spec and review: ai-workflow desk
+  `specs/B1a-board-fence.md`, `reviews/B1a-board-fence.md`; signed off as decision F20 (2026-11-16).
+- Setting, per profile in its own `config.yaml` (defaults in `hermes_cli/config_defaults.py`):
+  `kanban.board_fence` = a board slug (fenced), `"*"` (any board, on purpose) or unset;
+  `kanban.chat_command` = `false` by default. Read and normalised in one module,
+  `hermes_cli/kanban_board_fence.py`. An invalid value fails closed everywhere.
+- Rules 0-2, `tools/kanban_tools.py::_apply_board_fence`, called by the `_kanban_handler` wrapper for every kanban
+  tool, skipped only for the dispatcher-owned worker (`owned_kanban_task()`; its env pin already ignores an
+  explicit board). No setting and not the `default` profile → every tool refused; `"*"` → upstream; fenced → no
+  `board` means the fence board (never `HERMES_KANBAN_BOARD` or `kanban/current`), another board is refused with
+  a WARNING log line. The caller's fence is the stricter of its loaded config (a managed worker's frozen session
+  config) and its live `config.yaml`, so a fence added after a session opened still binds it; a broken live file
+  that mentions `board_fence` fails closed.
+- Rule 3, `_fence_handoff` in `_handle_create` (assignee, `triage=true`) and `_handle_request_review` (reviewer),
+  in every context including dispatched workers: a fenced profile hands a card only to a profile whose own file
+  is fenced to the same board, and creates no triage cards. Reviewed list of tool parameters that name a profile:
+  `test_schema_guard_every_parameter_that_names_a_profile_was_reviewed` (fails when upstream adds one).
+- Rule 4, `gateway/session_kanban.py::build_kanban_policy`: after the claim checks, the owner profile's file
+  (`authority.profile_id`/config.yaml) is read; fenced and the card's board differs → `RuntimeStoreError(
+  'board_fenced', field='board', detail=...)`, invalid → `board_fence_invalid`. No session, no `owner_admitted`;
+  the attempt fails like any owner refusal (`failure_limit` blocks the card). An unparseable file that does not
+  mention `board_fence` keeps the upstream path. `hermes_cli/kanban_worker_client.py::_refusal_line` prints the
+  owner's `field`/`detail` beside the reason (`Kanban owner refused: board_fenced (board: card on board ...)`),
+  which becomes the run's error text; same exit code 1. Other refusals without a detail read as before.
+- Rules 5-6, `gateway/slash_commands.py::_handle_kanban_command`: `/kanban` answers only when the bot-owning
+  profile (resolved like `slash_access.policy_for_runner_source`: transport profile under multiplex, a served
+  profile only when its config is loaded, else the launch home) sets `chat_command: true` and is not fenced.
+  Unresolvable owner or unreadable file → refused. **Deploying this turns `!kanban` off on every bot** unless its
+  config sets the key. The interactive CLI `/kanban`, the TUI/ACP `slash.exec` read path, `hermes kanban` and
+  the dashboard are operator surfaces and unchanged.
+- Docs: `website/docs/user-guide/features/kanban.md` "Board fence" (both keys, so `tests/ci/test_docs_drift.py`
+  passes) and a note on the `/kanban` paragraph.
+- Rollback: unset the keys for upstream tool behaviour (`/kanban` stays off unless `chat_command: true`); or reset
+  the branch to the commit before this patch (older code ignores both keys) and restart the gateways one at a time.
+- Tests: `tests/tools/test_kanban_board_fence.py`, `tests/gateway/test_kanban_board_fence_gateway.py` (87 of 106
+  fail on the bare branch; the 19 that pass are the cases that keep upstream behaviour), plus
+  `tests/hermes_cli/test_kanban_notify.py` (its two `/kanban create` tests now opt in with `chat_command: true`),
+  `tests/ci/test_docs_drift.py` and the kanban suite (`tests/**/test_*kanban*.py`).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

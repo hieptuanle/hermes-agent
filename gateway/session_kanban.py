@@ -48,6 +48,12 @@ def build_kanban_policy(connection, params, config):
                 skills = list(dict.fromkeys([*skills, 'sdlc-review']))
     except (ValueError, OSError, sqlite3.Error) as exc:
         raise RuntimeStoreError('invalid_kanban_claim') from exc
+    # Board fence, rule 4 (4handy local patch, hermes_cli/kanban_board_fence.py): a fenced profile
+    # runs cards from its own board only. Final refusal: no session, no owner_admitted marker.
+    from hermes_cli.kanban_board_fence import card_refusal
+    refusal = card_refusal(Path(authority.profile_id), board, task.assignee)
+    if refusal:
+        raise RuntimeStoreError(refusal[0], field='board', detail=refusal[1])
     cwd = task.workspace_path
     params_policy = {'source': 'cli', 'cwd': cwd}
     for name, value in (('model', task.model_override), ('provider', task.provider_override), ('reasoning', task.reasoning_effort)):

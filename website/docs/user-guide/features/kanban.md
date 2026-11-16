@@ -388,6 +388,32 @@ that home may claim — anything else lands in the dispatcher's
 `skipped_nonspawnable` bucket instead of spawning, and no longer counts as
 spawnable work for the gateway's wake-up probe.
 
+### Board fence (4handy local patch)
+
+Boards are shared files, so any caller that names a board can open it. A profile
+can be fenced to one board in its own `config.yaml`:
+
+```yaml
+kanban:
+  board_fence: box-hiep   # a board slug; "*" = any board, on purpose
+  chat_command: false     # /kanban in chat answers only when true
+```
+
+With `kanban.board_fence` set to a slug, the profile's agent (chat turns, cron
+runs, delegate children) uses that board when a kanban tool names none and gets
+an error, with nothing changed, when it names another. The profile hands cards
+(`kanban_create`'s `assignee`, `kanban_request_review`'s `reviewer`) only to
+profiles fenced to the same board and cannot create triage cards, and its
+gateway refuses to run a card from any other board (`board_fenced`, shown in the
+run's error text). A profile that has the kanban toolset and no `board_fence` is
+refused every kanban tool, except the `default` profile; `"*"` keeps the
+upstream behaviour. Dispatched workers keep the dispatcher's board pin. An
+invalid value fails closed.
+
+`/kanban` in chat (`!kanban` on Mattermost) runs the whole kanban CLI, so it
+answers only on a bot whose profile sets `kanban.chat_command: true`, and never
+on a fenced profile. The CLI and the dashboard are not fenced.
+
 ### Idempotent create (for automation / webhooks)
 
 ```bash
@@ -1072,6 +1098,10 @@ The resulting graph is committed atomically: dispatchers and dashboard readers s
 ## `/kanban` slash command {#kanban-slash-command}
 
 Every `hermes kanban <action>` verb is also reachable as `/kanban <action>` — from inside an interactive `hermes chat` session **and** from any gateway platform (Telegram, Discord, Slack, WhatsApp, Signal, Matrix, Mattermost, email, SMS). Both surfaces call the exact same `hermes_cli.kanban.run_slash()` entry point that reuses the `hermes kanban` argparse tree, so the argument surface, flags, and output format are identical across CLI, `/kanban`, and `hermes kanban`. You don't have to leave the chat to drive the board.
+
+On this fork, a gateway platform answers `/kanban` only for a bot whose profile sets
+`kanban.chat_command: true` and is not fenced (see "Board fence" above); the interactive
+`hermes chat` command is unchanged.
 
 ```
 /kanban list

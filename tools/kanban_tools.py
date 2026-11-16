@@ -165,7 +165,7 @@ def _kanban_handler(tool_name: str) -> Callable:
                 _check(not unknown,
                        f"{tool_name}: unknown parameter(s): {', '.join(unknown)}. "
                        f"Valid parameters: {', '.join(sorted(properties))}. Nothing changed.")
-                return fn(args, **kw)
+                return fn(_apply_board_fence(tool_name, args), **kw)
             except _Reject as e:
                 return e.args[0]
             except Exception as e:
@@ -174,6 +174,73 @@ def _kanban_handler(tool_name: str) -> Callable:
                 return tool_error(f"{tool_name}: {e}")
         return wrapper
     return deco
+
+
+# --- Board fence (4handy local patch, hermes_cli/kanban_board_fence.py) ---
+
+def _owned_kanban_task() -> str:
+    """The dispatcher-owned task id, ``""`` otherwise (and when it cannot be evaluated: the
+    fence then applies, which is the closed side)."""
+    try:
+        from agent.delegation_context import owned_kanban_task
+        return owned_kanban_task()
+    except Exception:
+        return ""
+
+
+def _fence_refusal(tool_name: str, why: str, **log_fields: Any) -> _Reject:
+    from hermes_cli.profiles import current_profile_name
+    logger.warning("kanban board fence: %s refused for profile %s: %s %s", tool_name,
+                   current_profile_name("?"), why, log_fields or "")
+    return _Reject(f"{tool_name} refused: {why} Nothing changed.")
+
+
+def _apply_board_fence(tool_name: str, args: dict) -> dict:
+    """Rules 0-2 for every caller that is not a dispatched worker (chat turns, cron runs, delegate
+    children, execute_code): no setting → refused (``default`` exempt); ``"*"`` → as upstream;
+    fenced → no ``board`` means the fence board, any other board is refused. Dispatched workers
+    keep the dispatcher's env pin (it already ignores an explicit board)."""
+    if _owned_kanban_task():
+        return args
+    from hermes_cli import kanban_board_fence as kbf
+    fence = kbf.caller_fence()
+    if fence.error:
+        raise _fence_refusal(tool_name, f"{fence.error}.")
+    if fence.any:
+        return args
+    if not fence.fenced:
+        if kbf.caller_is_default_profile():
+            return args
+        raise _fence_refusal(tool_name, "kanban tools need kanban.board_fence on this profile "
+                                        "(a board, or \"*\" for any board).")
+    requested = args.get("board")
+    if requested is not None and str(requested).strip():
+        if str(requested).strip().lower() != fence.board:
+            raise _fence_refusal(
+                tool_name, f"this profile is fenced to board '{fence.board}'; '{requested}' is outside "
+                f"the fence. Omit 'board' or pass '{fence.board}'.", requested=requested)
+    return {**args, "board": fence.board}
+
+
+def _fence_handoff(tool_name: str, role: str, profile: Any, *, triage: bool = False) -> None:
+    """Rule 3: a fenced profile (any context, dispatched workers included) hands a card only to a
+    profile fenced to the same board, and creates no triage card."""
+    from hermes_cli import kanban_board_fence as kbf
+    fence = kbf.caller_fence()
+    if fence.error:
+        raise _fence_refusal(tool_name, f"{fence.error}.")
+    if not fence.fenced:
+        return
+    if triage:
+        raise _fence_refusal(tool_name, "triage cards are not allowed on a fenced board: their "
+                                        "assignees are chosen later from every profile.")
+    if not profile:
+        return
+    other = kbf.profile_fence(str(profile))
+    if other.board != fence.board:
+        raise _fence_refusal(tool_name, f"{role} '{profile}' is not in board '{fence.board}' "
+                                        f"(its kanban.board_fence is {other.describe()}).",
+                             **{role: profile})
 
 
 def _reject_delegated_child_mutation(tool_name: str) -> None:
@@ -896,6 +963,7 @@ def _handle_request_review(args: dict, **kw) -> str:
         _check(profile_exists(reviewer),
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
+        _fence_handoff("kanban_request_review", "reviewer", reviewer)
     with _board(args.get("board")) as (kb, conn):
         _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
         try:
@@ -1113,6 +1181,7 @@ def _handle_create(args: dict, **kw) -> str:
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
+    _fence_handoff("kanban_create", "assignee", assignee, triage=triage)
     with _board(args.get("board")) as (kb, conn):
         from gateway.session_context import get_session_env
         from tools.async_delegation import _current_origin_session_id

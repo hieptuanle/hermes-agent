@@ -1936,6 +1936,14 @@ DEFAULT_CONFIG = {
         # On boards that never archive, the notifier GC purges subscriptions for tasks done with no
         # activity for this many days so stale rows aren't scanned forever. 0 = off.
         "done_sub_retention_days": 30,
+        # 4handy local patch (board fence, hermes_cli/kanban_board_fence.py). A board slug fences
+        # this profile to that board: its kanban tools use it and refuse any other, it hands cards
+        # only to profiles fenced to the same board, and its gateway runs cards from that board
+        # only. "*" = any board, on purpose. None/"" = an agent with the kanban toolset is refused
+        # (the default profile excepted); dispatched workers behave as upstream.
+        "board_fence": None,
+        # 4handy local patch: /kanban in chat answers only when True, never on a fenced profile.
+        "chat_command": False,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

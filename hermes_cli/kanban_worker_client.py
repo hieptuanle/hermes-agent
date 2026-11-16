@@ -186,8 +186,20 @@ def _submit():
             os.environ.pop(key, None)
         return asyncio.run(run(params, board_db))
     except (KeyError, ValueError, OSError) as exc:
-        print(f'Kanban owner refused: {exc}', file=sys.stderr)
+        print(f'Kanban owner refused: {_refusal_line(exc)}', file=sys.stderr)
         return 1
+
+
+def _refusal_line(exc):
+    """The reason code, plus the owner's bounded ``field``/``detail`` when it named the check that
+    fired (``board_fenced (board: card on board 'x'; ...)``). These last lines become the run's
+    error text on the board, so the reason is readable there (4handy local patch, board fence)."""
+    data = getattr(exc, 'data', None)
+    data = data if isinstance(data, dict) else {}
+    field, detail = str(data.get('field') or '').strip(), str(data.get('detail') or '').strip()
+    if not detail:
+        return str(exc)
+    return f"{exc} ({field + ': ' if field else ''}{detail})"
 
 
 if __name__ == '__main__':
