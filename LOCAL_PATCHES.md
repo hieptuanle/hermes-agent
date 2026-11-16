@@ -139,6 +139,26 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `tests/tools/test_skill_size_limits.py`, `tests/tools/test_skill_manager_tool.py`, `tests/ci/test_docs_drift.py`
   (key documented in `website/docs/user-guide/configuration.md`).
 
+## Docker exec carries the turn's session context (WT121755, D230)
+
+- `tools/environments/docker.py::_run_bash` adds every session var bound in the calling task
+  (`gateway/session_context.py::bound_session_env`: the `_VAR_MAP` names whose ContextVar is set here, `""`
+  included) to EACH `docker exec`, as name-only `-e NAME` flags with the values in the docker client's env
+  (#96268 pattern). Unbound vars are left out and never read from `os.environ` (the gateway's mirror can hold
+  another conversation's sender). Parity with `tools/environments/local.py::_inject_session_context_env`, minus
+  plugin session env.
+- `cron/scheduler.py::_CronRunScope` binds `HERMES_SESSION_CRON_JOB_ID` / `HERMES_SESSION_CRON_JOB_NAME` (job
+  name, never the prompt) on enter and resets them on exit; both are in `_VAR_MAP`, so the local backend bridges
+  them too, and the `HERMES_SESSION_` prefix keeps them out of the shell snapshot.
+- Why: the 4handy erp CLI (>= 0.90.0) builds its audit reason ("<username> (mm:<id>) nhờ, <post link>" /
+  "cron <name> (<id>)") from these; without the patch every docker-backend bot sends none.
+- Tests: `tests/tools/test_docker_session_env.py` (2 concurrent conversations, stale env mirror, cron scope;
+  the 2 exec tests fail without the docker change) and, with `HERMES_TEST_DOCKER_IMAGE`,
+  `tests/tools/test_docker_backend_real.py::test_concurrent_turns_each_see_their_own_session_in_one_container`;
+  plus `tests/tools/test_docker_environment.py`, `tests/tools/test_snapshot_session_id_leak.py`, `tests/cron`.
+- Upstream issue candidate: docker (and ssh/modal/daytona) backends do not bridge `HERMES_SESSION_*` at
+  `v0.23.1`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
