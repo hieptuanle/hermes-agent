@@ -10,7 +10,8 @@ from typing import Any, Dict, Mapping, Optional
 
 from hermes_constants import display_hermes_home
 from agent.prompt_cache_boundary import register_stable_prefix
-from agent.skill_preprocessing import load_skills_config as _load_skills_config, preprocess_skill_content
+from agent.skill_preprocessing import (
+    _agent_visible_skill_dir, load_skills_config as _load_skills_config, preprocess_skill_content)
 from agent.skill_utils import AMBIGUOUS_SKILL_PREFIX
 
 logger = logging.getLogger(__name__)
@@ -378,9 +379,13 @@ def _build_skill_message(
         str(loaded_skill.get("content") or ""), skill_dir, session_id, skills_cfg=_load_skills_config(),
     )
     parts = [activation_note, "", content.strip()]
+    # 4handy local patch: the directory the model sees is where the terminal backend has it
+    # (/root/.hermes/skills/... in a docker sandbox), not the gateway-host path; host-side
+    # work below (supporting-file walk, skill_view target) keeps using skill_dir.
+    visible_dir = _agent_visible_skill_dir(skill_dir)
     # Absolute skill dir lets the agent run bundled scripts without a skill_view() round-trip.
     if skill_dir:
-        parts += ["", f"[Skill directory: {skill_dir}]", _SKILL_DIR_NOTE]
+        parts += ["", f"[Skill directory: {visible_dir}]", _SKILL_DIR_NOTE]
     _inject_skill_config(loaded_skill, parts)
     setup_note = _setup_note(loaded_skill)
     if setup_note:
@@ -396,7 +401,7 @@ def _build_skill_message(
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {skill_dir}{_SUPPORTING_FILES_END}"
+            f"(e.g. `node {visible_dir}{_SUPPORTING_FILES_END}"
         )
     stable_prefix = None
     if user_instruction:

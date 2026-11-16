@@ -315,6 +315,54 @@ def iter_skills_files(container_base: str = "/root/.hermes") -> list[dict[str, s
             for _base, files in _walk_skill_tree(host_dir) for item in files]
 
 
+def map_skill_path_to_container(host_path: str, container_base: str = "/root/.hermes") -> Optional[str]:
+    """POSIX sandbox path for a host path under a mounted/synced skills root, else None.
+
+    4handy local patch. Maps from the SOURCE root (``_skill_dir_roots``), not from the mount's
+    host side, so a root served through the sanitized copy (``_safe_skills_path``) maps to the
+    same container root; it never builds or refreshes that copy. Matches the spelled path first,
+    then through symlinks (a symlinked ``~/.hermes`` or ``external_dirs`` entry)."""
+    def join(root: str, rel: Path) -> str:
+        return root if rel == Path(".") else posixpath.join(root, rel.as_posix())
+
+    try:
+        path = Path(host_path)
+        roots = list(_skill_dir_roots(container_base))
+        for root, container_root in roots:
+            if path.is_relative_to(root):
+                return join(container_root, path.relative_to(root))
+        real = path.resolve()
+        for root, container_root in roots:
+            real_root = root.resolve()
+            if real.is_relative_to(real_root):
+                return join(container_root, real.relative_to(real_root))
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Could not map skill path %s into the sandbox", host_path, exc_info=True)
+    return None
+
+
+def to_agent_visible_skill_path(host_path: str, container_base: str = "/root/.hermes") -> str:
+    """Translate a host skill dir/file path to where the active terminal backend sees it.
+
+    4handy local patch: ``skill_view``'s ``skill_dir``, ``${HERMES_SKILL_DIR}`` and the
+    ``[Skill directory: ...]`` footer handed the model the gateway-host path
+    (``/home/<user>/.hermes/profiles/<p>/skills/...``), which does not exist inside a docker
+    sandbox; the model ran ``python <host path>/scripts/x.py`` there and failed. Same backend
+    rules as :func:`to_agent_visible_cache_path` (the skill roots are mounted/synced under the
+    same base): docker/modal → ``/root/.hermes``; ssh/daytona/vercel_sandbox → ``~/.hermes``;
+    local, plugin and unknown backends, or a path under no skills root → unchanged."""
+    try:
+        backend = _terminal_backend()
+    except Exception:  # refusal scope or unreadable env: never break skill loading
+        return host_path
+    if backend in _HOME_RELATIVE_BACKENDS:
+        container_base = "~/.hermes"
+    elif backend not in ("docker", "modal"):
+        return host_path
+    mapped = map_skill_path_to_container(host_path, container_base=container_base)
+    return mapped if mapped is not None else host_path
+
+
 # --- Cache directory mounts (documents, images, audio, videos, screenshots) ---
 
 # (new_subpath, old_name) pairs matching hermes_constants.get_hermes_dir().

@@ -139,6 +139,18 @@ def _is_community_hub_skill(skill_dir: Path | None) -> bool:
         return True
 
 
+def _agent_visible_skill_dir(skill_dir: Path | None) -> str | None:
+    """*skill_dir* as the active terminal backend sees it (4handy local patch; host path on failure)."""
+    if not skill_dir:
+        return None
+    try:
+        from tools.credential_files import to_agent_visible_skill_path
+        return to_agent_visible_skill_path(str(skill_dir))
+    except Exception:
+        logger.debug("Could not translate skill dir %s for the terminal backend", skill_dir, exc_info=True)
+        return str(skill_dir)
+
+
 def preprocess_skill_content(
     content: str,
     skill_dir: Path | None,
@@ -149,8 +161,15 @@ def preprocess_skill_content(
     if not content:
         return content
     cfg = skills_cfg if isinstance(skills_cfg, dict) else load_skills_config()
+    inline_shell = cfg.get("inline_shell", False) and not _is_community_hub_skill(skill_dir)
     if cfg.get("template_vars", True):
-        content = substitute_template_vars(content, skill_dir, session_id)
-    if cfg.get("inline_shell", False) and not _is_community_hub_skill(skill_dir):
+        # 4handy local patch: the rendered text is read by the model, which runs commands in the
+        # terminal backend, so ${HERMES_SKILL_DIR} becomes the sandbox-visible path there. Inline
+        # shell snippets still run HERE (host, cwd=skill_dir), so they keep the host path.
+        if inline_shell and "!`" in content:
+            content = _INLINE_SHELL_RE.sub(
+                lambda m: "!`" + substitute_template_vars(m.group(1), skill_dir, session_id) + "`", content)
+        content = substitute_template_vars(content, _agent_visible_skill_dir(skill_dir), session_id)
+    if inline_shell:
         content = expand_inline_shell(content, skill_dir, int(cfg.get("inline_shell_timeout", 10) or 10))
     return content

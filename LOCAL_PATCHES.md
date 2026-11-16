@@ -89,6 +89,32 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/skills/test_google_workspace_setup_sandbox_deps.py` (all 5 fail on the bare script), plus
   `tests/skills/test_google_workspace_setup_deps.py`, `tests/skills/test_google_workspace_setup.py`.
 
+## Skill paths shown to the model are sandbox paths
+
+- `tools/credential_files.py::to_agent_visible_skill_path` / `map_skill_path_to_container` (beside upstream's
+  `to_agent_visible_cache_path`): a host path under a skills root (`_skill_dir_roots`: local `skills/`,
+  `external_dirs[i]`, project dirs) maps to its mount/sync target: docker/modal `/root/.hermes/skills/...`,
+  `/root/.hermes/external_skills/<i>/...`; ssh/daytona/vercel_sandbox `~/.hermes/...`; local, plugin or unknown
+  backends and paths under no root stay unchanged. It maps from the SOURCE root, so roots served through the
+  sanitized copy (patch above) map to the same container root, and it never builds or refreshes that copy.
+- Applied only where text goes to the model: the `skill_view` tool handler (`tools/skills_tool.py::
+  _agent_visible_skill_view`, the `skill_dir` field), `${HERMES_SKILL_DIR}` in
+  `agent/skill_preprocessing.py::preprocess_skill_content` (skill_view content, cron `skills:` prompt, slash and
+  preload messages) and the `[Skill directory: ...]` / `node <dir>/scripts/foo.js` footer in
+  `agent/skill_commands.py::_build_skill_message`. Internal `skill_view()` callers keep the host path (they walk
+  supporting files and run inline shell on the host); inline `!`cmd`` snippets keep the host path too.
+- Why: v0.23.1 dropped `User`/`Home`/`Working directory` from the docker backend probe in the system prompt
+  (`agent/prompt_builder.py::_BACKEND_PROBE_CMD`, OS/kernel only), so the model no longer learns `$HOME=/root`
+  in the sandbox and trusts `skill_view`'s host `skill_dir` (`/home/<user>/.hermes/profiles/<p>/skills/...`,
+  the same value v0.19.1 returned). minhvubot cron `ad46536e64cc` ran
+  `python <host skill_dir>/scripts/google_api.py` in the sandbox on 2026-11-16 08:00 and reported "script not in
+  the Docker environment"; 11-10..11-14 (v0.19.1) the same job used `/root/.hermes/skills/...`.
+- Tests: `tests/tools/test_skill_dir_agent_visible.py` (its 4 boundary tests fail when only the helper is present and the
+  consumers are unpatched), plus `tests/agent/test_skill_commands*.py`, `tests/agent/test_skill_inline_shell_*.py`,
+  `tests/tools/test_skills_tool*.py`, `tests/tools/test_skill_view_*.py`, `tests/tools/test_credential_files.py`,
+  `tests/tools/test_docker_environment.py`, `tests/cron/test_cron_prompt_injection_skill.py`.
+- Upstream issue candidate: unchanged up to `v0.23.1+canary.20261114` (skill_dir is host-only for every container backend).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

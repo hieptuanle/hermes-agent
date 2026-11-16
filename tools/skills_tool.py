@@ -755,6 +755,23 @@ registry.register(
     check_fn=check_skills_requirements, emoji="📚")
 
 
+def _agent_visible_skill_view(result: str) -> str:
+    """4handy local patch: the model-facing ``skill_dir`` is where the terminal backend sees the
+    skill (``/root/.hermes/skills/...`` in a docker sandbox), not the gateway-host path it would
+    otherwise run ``python <host path>/scripts/...`` against. Internal callers of ``skill_view()``
+    (slash/preload/cron builders) still get the host path they walk and preprocess with."""
+    with suppress(Exception):
+        parsed = json.loads(result)
+        host_dir = parsed.get("skill_dir") if isinstance(parsed, dict) else None
+        if host_dir:
+            from tools.credential_files import to_agent_visible_skill_path
+            visible = to_agent_visible_skill_path(host_dir)
+            if visible != host_dir:
+                parsed["skill_dir"] = visible
+                return _json(parsed)
+    return result
+
+
 def _skill_view_with_bump(args, **kw):
     """Invoke skill_view, then bump view_count/use on success (best-effort). Repeat-view dedup
     mirrors read_file's unchanged-stub: a result byte-identical to one already served for the
@@ -766,7 +783,7 @@ def _skill_view_with_bump(args, **kw):
     # possibly-pruned transcript copy (#95976). No dedup in the fork; None also keeps its views
     # out of the parent's bucket.
     dedup_task_id = None if is_background_review() else task_id
-    result = skill_view(name, file_path=args.get("file_path"), task_id=task_id)
+    result = _agent_visible_skill_view(skill_view(name, file_path=args.get("file_path"), task_id=task_id))
     with suppress(Exception):
         parsed = json.loads(result)
         if isinstance(parsed, dict) and parsed.get("success"):
