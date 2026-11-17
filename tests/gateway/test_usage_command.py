@@ -262,6 +262,59 @@ class TestUsageReset:
         assert seen["force"] is False
         assert seen["api_key"] == "tok"
 
+    # 4handy local patch (SEC2, F26 Q4 B): `usage reset` is admin-only once the platform lists admins; plain
+    # `usage` stays open. The real redeem is never called: every test replaces it with a recorder.
+    @staticmethod
+    def _gate(monkeypatch):
+        from gateway.slash_access import SlashAccessPolicy
+        policy = SlashAccessPolicy(enabled=True, admin_user_ids=frozenset({"admin1"}),
+                                   user_allowed_commands=frozenset({"usage"}))
+        monkeypatch.setattr("gateway.slash_access.policy_for_runner_source", lambda runner, source: policy)
+
+    @staticmethod
+    def _recording_redeem(monkeypatch):
+        calls = []
+
+        def fake_redeem(*, base_url=None, api_key=None, force=False):
+            calls.append(force)
+            from agent.account_usage import CodexResetRedeemResult
+            return CodexResetRedeemResult(status="reset", message="✅ redeemed", available_count=1)
+
+        monkeypatch.setattr("agent.account_usage.redeem_codex_reset_credit", fake_redeem)
+        return calls
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_id, redeemed", [("admin1", True), ("staff1", False)])
+    async def test_reset_is_admin_only_once_gated(self, monkeypatch, user_id, redeemed):
+        agent = _make_mock_agent(provider="openai-codex",
+                                 base_url="https://chatgpt.com/backend-api/codex", api_key="tok")
+        runner = _make_runner(SK, cached_agent=agent)
+        self._gate(monkeypatch)
+        calls = self._recording_redeem(monkeypatch)
+        event = self._event("reset --force")
+        event.source.user_id = user_id
+
+        result = await runner._handle_usage_command(event)
+
+        if redeemed:
+            assert result == "✅ redeemed" and calls == [True]
+        else:
+            assert result == "⛔ /usage reset is admin-only here." and calls == []
+
+    @pytest.mark.asyncio
+    async def test_plain_usage_still_works_for_a_non_admin_once_gated(self, monkeypatch):
+        runner = _make_runner(SK, cached_agent=_make_mock_agent())
+        self._gate(monkeypatch)
+        calls = self._recording_redeem(monkeypatch)
+        event = self._event("")
+        event.source.user_id = "staff1"
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"):
+            result = await runner._handle_usage_command(event)
+
+        assert "claude-sonnet-4.6" in result and "admin-only" not in result
+        assert calls == []
+
 
 class TestUsageContextBreakdown:
     """The /usage output includes the per-category context breakdown."""

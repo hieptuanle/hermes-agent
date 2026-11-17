@@ -205,6 +205,19 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `tests/hermes_cli/test_kanban_notify.py` (its two `/kanban create` tests now opt in with `chat_command: true`),
   `tests/ci/test_docs_drift.py` and the kanban suite (`tests/**/test_*kanban*.py`).
 
+## `/usage reset` is admin-only (SEC2)
+
+- `gateway/slash_commands_status.py::_handle_usage_command`: at the top of the `wants_reset` block, a sender who is
+  not an admin under `slash_access.policy_for_runner_source` (the bot-owning profile's `allow_admin_from` /
+  `group_allow_admin_from`) gets `⛔ /usage reset is admin-only here.` and nothing is redeemed. Why: the slash gate
+  checks the command name only, so with `usage` in `user_allowed_commands` any staff user could type
+  `!usage reset` and spend the banked Codex rate-limit reset of the one login every bot shares (ai-workflow
+  `specs/SEC2-slash-admin-only.md`, decision F26 Q4 B). Plain `/usage` is unchanged. Inert while a scope has no
+  admin list (`is_admin` is then true for everyone).
+- Rollback: reset the branch to the commit before this patch and restart the gateways.
+- Tests: `tests/gateway/test_usage_command.py::TestUsageReset` (admin redeems, non-admin refused with no redeem,
+  plain `usage` works for a non-admin; the redeem is always a stub).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

@@ -590,6 +590,10 @@ class GatewayStatusCommandsMixin:
             # Codex subscription windows still render from on-disk credentials (#15167).
             provider = await _quiet(lambda: asyncio.to_thread(_configured_provider)) or None
         if wants_reset:
+            # 4handy (SEC2): `usage reset` spends the banked Codex reset of the login every bot shares.
+            from gateway.slash_access import policy_for_runner_source
+            if not policy_for_runner_source(self, source).is_admin(getattr(source, "user_id", None)):
+                return t("gateway.unauthorized.admin_only", command="usage reset", suffix="").rstrip()
             if str(provider or "").strip().lower() != "openai-codex":
                 return t("gateway.usage.reset_wrong_provider")
             from agent.account_usage import redeem_codex_reset_credit
