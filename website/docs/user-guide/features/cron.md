@@ -911,8 +911,9 @@ Failed jobs always deliver regardless of the `[SILENT]` marker — only successf
 ### Declaring a failed run
 
 Only runtime failures (exceptions, timeouts, an unreachable model) mark a run as failed. When the agent itself
-finishes its turn but the work did not get done — for example a delegated subagent or a script it ran failed —
-it can declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
+finishes its turn but the work did not get done — a script or command it depends on failed or timed out, a
+required file, report or message was not produced or sent, or a delegated subagent failed — the cron prompt
+tells it to declare the run failed by putting `[CRON_FAILURE]` alone on the **first line** of its response, followed
 by the explanation:
 
 ```text
@@ -925,6 +926,18 @@ all reflect it) and the failure notice is delivered like any other failed run. T
 under `~/.hermes/cron/output/` for triage. The marker is strict: mentioning or quoting `[CRON_FAILURE]` anywhere
 else in a report leaves the run successful. Script-only (`no_agent`) jobs ignore it — a script signals failure
 with a non-zero exit code.
+
+By default the failure is delivered as the generic failure notice (plus a review nudge after repeated failures).
+To deliver the agent's own explanation — the lines after the marker, as-is, in whatever language it wrote them —
+set (4handy local patch):
+
+```yaml
+cron:
+  declared_failure_delivery: verbatim   # notice (default) | verbatim
+```
+
+The run is recorded as failed in both modes, and incident dedup (`failure_repeat_alert_hours`, `hermes cron
+incidents ack`) still applies.
 
 ## Script timeout
 

@@ -1862,6 +1862,10 @@ DEFAULT_CONFIG = {
         # silences a signature for good. 0 = re-alert on every failing run. Keep in sync with
         # cron.scheduler.DEFAULT_FAILURE_REPEAT_ALERT_HOURS.
         "failure_repeat_alert_hours": 6,
+        # 4handy local patch: delivery of an agent-declared [CRON_FAILURE]. "notice" = the generic
+        # English failure notice + streak nudge (upstream); "verbatim" = the agent's explanation
+        # (lines after the marker) as-is. The run is recorded as failed either way.
+        "declared_failure_delivery": "notice",
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

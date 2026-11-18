@@ -544,6 +544,21 @@ SILENT_MARKER = "[SILENT]"
 # Agent-declared failure marker for cron runs. Unlike SILENT, it is deliberately strict so a
 # report that merely quotes the token cannot turn a healthy run into a failed one.
 CRON_FAILURE_MARKER = "[CRON_FAILURE]"
+# Evidence recorded when the marker line has no explanation after it.
+CRON_FAILURE_DEFAULT_EVIDENCE = "Cron agent reported failure."
+DECLARED_FAILURE_DELIVERY_MODES = ("notice", "verbatim")
+
+
+def _declared_failure_delivery_mode() -> str:
+    """``cron.declared_failure_delivery`` (4handy local patch): how an agent-declared
+    ``[CRON_FAILURE]`` reaches the job's targets. ``notice`` (default, upstream): the English
+    ``generic_failure_notice`` wrapper plus the failure-streak nudge. ``verbatim``: the agent's own
+    explanation (the lines after the marker) as-is. Unknown values mean ``notice``."""
+    from cron.jobs import _cron_config_number
+
+    mode = _cron_config_number(
+        "declared_failure_delivery", "notice", lambda v: str(v or "").strip().lower())
+    return mode if mode in DECLARED_FAILURE_DELIVERY_MODES else "notice"
 
 
 def _cron_failure_marker_error(text: str) -> Optional[str]:
@@ -556,7 +571,7 @@ def _cron_failure_marker_error(text: str) -> Optional[str]:
     if not lines or lines[0].rstrip() != CRON_FAILURE_MARKER:
         return None
     evidence = "\n".join(lines[1:]).strip()
-    return evidence or "Cron agent reported failure."
+    return evidence or CRON_FAILURE_DEFAULT_EVIDENCE
 
 
 def _is_cron_silence_response(text: str) -> bool:
@@ -2968,6 +2983,11 @@ def _compose_run_delivery(
         )
         if incident_acked:
             deliver_content = ""
+        elif (agent_declared and err.strip() and err.strip() != CRON_FAILURE_DEFAULT_EVIDENCE
+              and _declared_failure_delivery_mode() == "verbatim"):
+            # 4handy local patch: users keep getting the bot's own explanation (in the job's
+            # language), not the English admin notice/nudge. Bookkeeping above and after is the same.
+            deliver_content = err.strip()
         elif agent_declared:
             # The agent already diagnosed the failure in prose; the summarizer's substring
             # heuristics would re-diagnose it ("timed out" -> blame the model service, "401" ->

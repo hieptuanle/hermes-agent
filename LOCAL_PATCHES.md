@@ -218,6 +218,30 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/gateway/test_usage_command.py::TestUsageReset` (admin redeems, non-admin refused with no redeem,
   plain `usage` works for a non-admin; the redeem is always a stub).
 
+## Cron runs declare their own failures; `cron.declared_failure_delivery`
+
+- Hint: the FAILURE clause of `cron/scheduler_prompt.py::_CRON_HINT` now tells the model to put `[CRON_FAILURE]`
+  alone on line 1 (literal ASCII, never translated) whenever the run could not produce or deliver its required
+  result: a script/command it depends on failed, exited non-zero or timed out; a required file, sheet, report or
+  message was not produced or not sent; a delegated child failed. Explanation follows in the job's language. Not
+  for "nothing new" (`[SILENT]`) or partial results the task allows. Upstream only mentioned a failed delegated
+  child, so models recorded failed runs as `ok`.
+- Config `cron.declared_failure_delivery` (`cron/scheduler.py::_declared_failure_delivery_mode`, default
+  `notice` in `hermes_cli/config_defaults.py`; unknown values = `notice`): `notice` = upstream
+  (`generic_failure_notice` English wrapper + `_failure_streak_nudge`); `verbatim` = deliver the lines after the
+  marker as-is. One branch in `_compose_run_delivery`, which both the normal tail (`run_one_job`) and receipt
+  recovery (`cron/scheduler_authority.py`) use. A bare marker (no explanation) still gets the notice.
+- Unchanged in both modes: `last_status` error, `failure_streak`+1, incident upsert + `alerted` marking, the
+  acked/alerted-cooldown withhold (a repeat of the same normalized explanation within
+  `cron.failure_repeat_alert_hours`, default 6 h, is not delivered), `failure_deliver` routing, `[SILENT]`,
+  marker only on line 1, runtime failures (summarizer copy).
+- Fleet: `declared_failure_delivery: verbatim` in every config.yaml (backups `config.yaml.bak-cronfail-20261118`).
+- Rollback: remove the key (backups) for upstream delivery with the broadened hint; or reset the branch to the
+  commit before this patch and restart the gateways (old code ignores the key).
+- Tests: `tests/cron/test_cron_declared_failure_delivery.py` (6 fail with the hint reverted and verbatim
+  disabled), plus `tests/cron/` (all), `tests/ci/test_docs_drift.py` (key documented in
+  `website/docs/user-guide/features/cron.md`).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
