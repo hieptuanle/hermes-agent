@@ -428,13 +428,59 @@ def _resolve_supporting_file(skill_dir: Path, file_path: str):
     return (None, _err(err)) if err else (target, None)
 
 
+def _external_writable() -> bool:
+    """``skills.external_writable`` (4handy local patch; default True = upstream). False makes every
+    skill under ``skills.external_dirs`` read-only to skill_manage, whoever calls it."""
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
+        value = cfg_get(load_config_readonly(), "skills", "external_writable", default=True)
+    except Exception:
+        logger.debug("skills.external_writable read failed; external skills stay writable", exc_info=True)
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() not in {"false", "no", "off", "0"}
+    return value is not False and value != 0
+
+
+def _is_shared_skill_path(path: Path) -> bool:
+    """Under one of ``skills.external_dirs`` (NOT project skill dirs, which stay upstream)."""
+    from agent.skill_utils import _resolve_for_skill_ownership, get_external_skills_dirs
+    candidate = _resolve_for_skill_ownership(path)
+    return any(candidate.is_relative_to(_resolve_for_skill_ownership(root))
+               for root in get_external_skills_dirs())
+
+
+def _shared_skill_read_only(path: Path) -> bool:
+    """True when ``skills.external_writable`` is false and ``path`` is in a shared skills dir."""
+    if _external_writable():
+        return False
+    try:
+        return _is_shared_skill_path(path)
+    except Exception:
+        logger.debug("shared-skill guard lookup failed for %s", path, exc_info=True)
+        return False
+
+
+def _shared_skill_refusal(name: str, action: str) -> dict[str, Any]:
+    return _err(
+        f"Refused, not a temporary error: '{name}' is a shared skill (skills.external_dirs) and is "
+        f"read-only for bots, so this {action} was not applied. Do not retry it or any other change to "
+        f"the shared skill. Save the lesson in a LOCAL skill instead: create one with "
+        f"skill_manage(action='create', ...) under a different name, or add a reference file to one of "
+        f"your own skills with skill_manage(action='write_file', name='<your skill>', "
+        f"file_path='references/<topic>.md', file_content=...).")
+
+
 def _locate_for_write(name: str, action: str, not_found_suffix: str = ""):
     """Find the skill; a delete also runs the background-review delete guard -> ``(skill_dir, None)``
-    | ``(None, error_dict)``."""
+    | ``(None, error_dict)``. With ``skills.external_writable: false`` a shared skill is refused for
+    every action (4handy local patch)."""
     existing = _find_skill(name)
     if not existing:
         return None, _err(_skill_not_found_error(name, not_found_suffix))
     skill_dir = existing["path"]
+    if _shared_skill_read_only(skill_dir):
+        return None, _shared_skill_refusal(name, action)
     guard = _background_review_delete_guard(name, skill_dir) if action == "delete" else None
     return (None, guard) if guard else (skill_dir, None)
 
@@ -509,8 +555,12 @@ def _create_skill(name: str, content: str, category: str | None = None) -> dict[
                or _validate_frontmatter(content) or _validate_content_size(content)):
         return _err(err)
     if existing := _find_skill(name):
-        return _err(f"A skill named '{name}' already exists at {existing['path']}.")
+        shared = (" That skill is shared and read-only for bots: pick a different name for your local skill."
+                  if _shared_skill_read_only(existing["path"]) else "")
+        return _err(f"A skill named '{name}' already exists at {existing['path']}.{shared}")
     skill_dir = _resolve_skill_dir(name, category)
+    if _shared_skill_read_only(skill_dir):  # skills.create_dir pointing into a shared dir
+        return _shared_skill_refusal(name, "create")
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir.parent)
     try:

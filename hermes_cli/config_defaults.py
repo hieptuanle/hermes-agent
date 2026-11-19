@@ -1455,6 +1455,10 @@ DEFAULT_CONFIG = {
         # Growth-only on existing SKILL.md: a write over the cap is refused only when it makes the
         # file bigger, so over-cap skills can still be trimmed. Supporting files keep the fixed limits.
         "max_content_chars": 100_000,
+        # 4handy local patch: false = skill_manage refuses every write (create/edit/patch/delete/
+        # write_file/remove_file, foreground, background review, curator) to skills under
+        # external_dirs; the bot is told to save the lesson in a local skill. Reads unchanged.
+        "external_writable": True,
         # Security-scan skills the agent writes via skill_manage. Off: the agent can run the same
         # code via terminal() ungated, so it mostly blocks prose with risky keywords. On: a
         # dangerous verdict is a tool error the agent can retry. Hub installs are always scanned.

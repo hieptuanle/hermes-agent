@@ -919,6 +919,17 @@ skills:
 
 A new SKILL.md must fit the cap. For an existing SKILL.md the cap is **growth-only**: a write that leaves it over the cap is refused only when it makes the file bigger, so an over-cap skill can always be trimmed (move depth into `references/<topic>.md` with `write_file` and leave a one-line pointer). Supporting files keep the fixed 100,000-char / 1 MiB limits.
 
+### Shared skills read-only for bots
+
+`skills.external_writable` (4handy local patch) controls whether `skill_manage` may change skills that live in `skills.external_dirs`:
+
+```yaml
+skills:
+  external_writable: true   # default (upstream); false = shared skills are read-only for bots
+```
+
+With `false`, every `skill_manage` write to a skill under an external dir (create, edit, patch, delete, `write_file`, `remove_file`; foreground turns, the background review and the curator alike) is refused, and the agent is told to keep the lesson in a local skill instead. Reading shared skills (`skill_view`, the skills index, cron `skills:`) is unchanged, and project skill dirs are not affected.
+
 ## Memory Configuration
 
 ```yaml

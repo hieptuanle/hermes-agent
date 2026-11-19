@@ -242,6 +242,29 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   disabled), plus `tests/cron/` (all), `tests/ci/test_docs_drift.py` (key documented in
   `website/docs/user-guide/features/cron.md`).
 
+## Shared skills read-only for bots (`skills.external_writable`)
+
+- Config `skills.external_writable` (default `true` in `hermes_cli/config_defaults.py` = upstream; strings
+  `false/no/off/0` = false), read per call (`tools/skill_manager_tool.py::_external_writable`).
+- `false`: `skill_manage` refuses every write to a skill under `skills.external_dirs`
+  (`_is_shared_skill_path`: `get_external_skills_dirs()` only; project skill dirs keep upstream behaviour). Guard points:
+  `_locate_for_write` (edit, patch incl. supporting files and full rewrite, delete, write_file, remove_file) and
+  `_create_skill` (target dir inside a shared dir via `skills.create_dir`; a name taken by a shared skill gets a
+  rename hint). Covers foreground turns, the background review fork, the curator's LLM pass, batches
+  (`skill_manager_batch` replays ops through `skill_manage`; a refused op rolls the batch back), `/skills approve`
+  and dashboard edits. Refusal (`_shared_skill_refusal`) says it is not temporary, the skill is shared and
+  read-only for bots, not to retry, and to save the lesson in a local skill (create, or `write_file` a reference).
+- Not gated: docker file tools/terminal (skills and external dirs are mounted `:ro` in sandboxes), the default
+  profile's local backend (host shell), hub/`hermes skills`/curator CLI (operator), `sync-skills.sh`. Reads
+  (`skill_view`, index, cron `skills:`) unchanged. Upstream curator archive/adopt already refuse external dirs.
+- Why: bots patched shared `erp-cli` dozens of times in one chat (2026-11-18) and grew shared references that
+  every bot loads; edits to the git-synced `skills-4handy` were silently reset every 10 min.
+- Fleet: `external_writable: false` in every config.yaml (backups `config.yaml.bak-sharedro-20261119`).
+- Rollback: delete the key / restore backups (per call, no restart); or reset to the commit before this patch and
+  restart (old code ignores the key).
+- Tests: `tests/tools/test_skill_external_readonly.py` (18 fail with the guard forced off), plus the
+  skill_manager / skill_usage / curator / background-review suites and `tests/ci/test_docs_drift.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
