@@ -232,12 +232,12 @@ def test_backend_probe(code, expected):
     assert env.commands == ["test -x " + shlex.quote("/w/x y.json")]
 
 
-def test_backend_probe_prefers_host_file(tmp_path):
+def test_backend_probe_never_uses_the_host_mode(tmp_path):
+    """Review P14 F1: the host may hold a different file at the same path; only the backend answers."""
+    data = _local(tmp_path, "d.json", "{}")  # 0644 on the host
     env = FakeEnv(0)
-    data = _local(tmp_path, "d.json", "{}")
-    assert ttg._is_executable_for_guard(env, str(tmp_path), str(data)) is False and env.commands == []
-    os.chmod(data, 0o755)
     assert ttg._is_executable_for_guard(env, str(tmp_path), str(data)) is True
+    assert env.commands == ["test -x " + shlex.quote(str(data))]
 
 
 def test_probe_kwarg_only_for_a_guard_that_accepts_it():
@@ -245,6 +245,44 @@ def test_probe_kwarg_only_for_a_guard_that_accepts_it():
     def old_scan(command, *, cwd=None, read_remote_script=None):
         return False, None
 
-    assert ttg._lifecycle_scan_kwargs(old_scan, FakeEnv(0), "/w") == {}
-    assert set(ttg._lifecycle_scan_kwargs(lg.scan_gateway_lifecycle, FakeEnv(0), "/w")) == {
+    assert ttg._lifecycle_scan_kwargs(old_scan, FakeEnv(0), "/w", "docker") == {}
+    assert set(ttg._lifecycle_scan_kwargs(lg.scan_gateway_lifecycle, FakeEnv(0), "/w", "docker")) == {
         "is_remote_executable"}
+
+
+@pytest.mark.parametrize("env_type,probe", [("local", False), ("docker", True), ("ssh", True), (None, True)])
+def test_probe_only_for_a_backend_that_is_not_the_host(env_type, probe):
+    """Local backend: the host file IS the file that runs, so the guard uses the host mode (no probe)."""
+    kwargs = ttg._lifecycle_scan_kwargs(lg.scan_gateway_lifecycle, FakeEnv(0), "/w", env_type)
+    assert ("is_remote_executable" in kwargs) is probe
+
+
+# --- review P14 F1: the host's file must not decide for the backend's ---------------------------
+
+def test_host_file_unreadable_and_not_executable_backend_copy_executable_blocks(tmp_path):
+    """Host: same path exists, unreadable (so the guard reads the backend copy), mode 0. Backend: the
+    copy is executable, unscannable and holds a restart. Parent blocks; so must #14."""
+    host = _local(tmp_path, "shadow", "secret\n", mode=0o000)
+    payload = "#!/bin/sh\nhermes gateway restart\n" + "#" * (CAP * 2)
+    backend = Backend({str(host): (payload, True)})
+    try:
+        unsafe, refusal = scan(f"{host}", backend, cwd=str(tmp_path))
+    finally:
+        os.chmod(host, 0o644)
+    assert unsafe and "scan cap" in refusal
+
+
+def test_host_file_big_readable_not_executable_backend_copy_executable_blocks(tmp_path):
+    """Host: same path is a big readable 0644 file (unscannable locally). With a backend probe, only
+    the backend's mode counts: executable there -> block."""
+    host = _local(tmp_path, "status", BIG)
+    backend = Backend({str(host): (BIG, True)})
+    unsafe, refusal = scan(f"{host}", backend, cwd=str(tmp_path))
+    assert unsafe and "scan cap" in refusal
+    assert [Path(p) for p in backend.probes] == [host.resolve()]
+
+
+def test_host_file_big_readable_backend_copy_not_executable_passes(tmp_path):
+    host = _local(tmp_path, "status", BIG, mode=0o755)  # host mode must not matter either way
+    backend = Backend({str(host): (BIG, False)})
+    assert scan(f"D=$(date) && python - <<'PY'\nopen('{host}')\nPY", backend, cwd=str(tmp_path)) == (False, None)

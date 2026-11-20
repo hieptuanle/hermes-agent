@@ -253,18 +253,11 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
 
 
 def _is_executable_for_guard(env: Any, guard_cwd: str, script_path: str) -> Optional[bool]:
-    """Execute bit of *script_path* as the command will see it: host filesystem first, then a
-    ``test -x`` on the backend. ``None`` when unknown (the guard then keeps failing closed)."""
+    """Execute bit of *script_path* in the BACKEND that runs the command (``test -x`` there). Never the
+    host's mode: on docker/ssh the host may hold a different file at the same path (review P14 F1).
+    ``None`` when unknown (the guard then keeps failing closed)."""
     if env is None:
         return None
-    try:
-        local_path = Path(script_path).expanduser()
-        if not local_path.is_absolute():
-            local_path = Path(guard_cwd) / local_path
-        if local_path.exists():
-            return bool(local_path.stat().st_mode & 0o111)
-    except Exception:
-        pass
     try:
         result = env.execute(f"test -x {shlex.quote(script_path)}")
         code = result.get("returncode", -1)
@@ -273,9 +266,13 @@ def _is_executable_for_guard(env: Any, guard_cwd: str, script_path: str) -> Opti
         return None
 
 
-def _lifecycle_scan_kwargs(scan, env: Any, guard_cwd: str) -> dict:
+def _lifecycle_scan_kwargs(scan, env: Any, guard_cwd: str, env_type: Optional[str] = None) -> dict:
     """Optional ``scan_gateway_lifecycle`` arguments the loaded guard module accepts: a gateway that
-    imported an older ``cron.lifecycle_guard`` before an in-place update must not get a TypeError."""
+    imported an older ``cron.lifecycle_guard`` before an in-place update must not get a TypeError.
+    The backend probe is passed only for a backend that is not the host (``env_type != "local"``); with no
+    probe the guard decides from the host's own file mode, which is the right file only for ``local``."""
+    if env is None or env_type == "local":
+        return {}
     try:
         import inspect
         if "is_remote_executable" in inspect.signature(scan).parameters:
@@ -345,7 +342,7 @@ def gateway_lifecycle_block(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
-        **_lifecycle_scan_kwargs(scan_gateway_lifecycle, env, guard_cwd),
+        **_lifecycle_scan_kwargs(scan_gateway_lifecycle, env, guard_cwd, env_type),
     )
     if unsafe and refusal:
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,

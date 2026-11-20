@@ -1151,7 +1151,8 @@ def _remote_data_file(
     path: Path, budget: _LifecycleScanBudget, is_remote_executable: Optional[_IsRemoteExecutableFn],
 ) -> bool:
     """Backend twin of ``_local_data_file``: True only when the backend says the file is NOT
-    executable. Unknown (no callback, budget spent, probe failed) is never data."""
+    executable. Unknown (no callback, budget spent, probe failed) is never data. When a probe is
+    given it is the only authority, also for a path the host has too (the host file may differ)."""
     if is_remote_executable is None or not budget.charge_remote_read():
         return False
     try:
@@ -1230,8 +1231,12 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
-            if candidate_executed and kind == _KIND_EXEC and _local_data_file(script_path):
-                _skip_unscannable_data(script_path, "local")
+            # With a backend probe the command runs in that backend, whose file at this path may differ
+            # from the host's (review P14 F1): only the backend's mode counts. No probe = local backend.
+            if candidate_executed and kind == _KIND_EXEC and (
+                    _remote_data_file(script_path, budget, is_remote_executable)
+                    if is_remote_executable is not None else _local_data_file(script_path)):
+                _skip_unscannable_data(script_path, "backend" if is_remote_executable else "local")
                 continue
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
