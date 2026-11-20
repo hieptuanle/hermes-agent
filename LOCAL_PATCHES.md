@@ -303,9 +303,12 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   the remote-read budget). Inside a kernel-executed program whose shebang names a non-shell interpreter
   (`_is_non_shell_program_text`), paths are walked as mentions (read and scanned when readable, never a
   fail-closed verdict); the program itself and `bash x` (which ignores the shebang) stay executed.
-- `tools/terminal_tool_guards.py`: `_is_executable_for_guard` (host `stat` first, else `test -x` on the backend;
-  unknown = `None`), passed only when the loaded guard module accepts it (`_lifecycle_scan_kwargs`), so a running
-  gateway that imported the older guard never gets a TypeError.
+- `tools/terminal_tool_guards.py`: `_is_executable_for_guard` = `test -x` in the backend only (unknown = `None`),
+  passed only for a backend that is not the host (`env_type != "local"`) and only when the loaded guard module
+  accepts it (`_lifecycle_scan_kwargs`), so a running gateway that imported the older guard never gets a
+  TypeError. With a probe, the backend's mode is the only authority, also for a path the host has too (the host
+  may hold a different file, e.g. `/etc/shadow`; review P14 F1); without one (local backend, cron script
+  pre-check) the host `stat` decides.
 - Why: Python/JS code tokenized as shell (`python - <<'PY'` bodies not masked because the line has `$(`,
   `node -` heredocs, `python -c` inside `$(...)`, a node bundle's path strings) put JSON data paths in command
   position; a >1 MiB file (or the 64 remote reads) failed the guard closed and blocked the whole command. 14
