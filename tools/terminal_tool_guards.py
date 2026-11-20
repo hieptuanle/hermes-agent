@@ -252,6 +252,39 @@ def _read_script_for_guard(env: Any, guard_cwd: str, script_path: str, max_bytes
     return None
 
 
+def _is_executable_for_guard(env: Any, guard_cwd: str, script_path: str) -> Optional[bool]:
+    """Execute bit of *script_path* as the command will see it: host filesystem first, then a
+    ``test -x`` on the backend. ``None`` when unknown (the guard then keeps failing closed)."""
+    if env is None:
+        return None
+    try:
+        local_path = Path(script_path).expanduser()
+        if not local_path.is_absolute():
+            local_path = Path(guard_cwd) / local_path
+        if local_path.exists():
+            return bool(local_path.stat().st_mode & 0o111)
+    except Exception:
+        pass
+    try:
+        result = env.execute(f"test -x {shlex.quote(script_path)}")
+        code = result.get("returncode", -1)
+        return True if code == 0 else False if code == 1 else None
+    except Exception:
+        return None
+
+
+def _lifecycle_scan_kwargs(scan, env: Any, guard_cwd: str) -> dict:
+    """Optional ``scan_gateway_lifecycle`` arguments the loaded guard module accepts: a gateway that
+    imported an older ``cron.lifecycle_guard`` before an in-place update must not get a TypeError."""
+    try:
+        import inspect
+        if "is_remote_executable" in inspect.signature(scan).parameters:
+            return {"is_remote_executable": lambda p: _is_executable_for_guard(env, guard_cwd, p)}
+    except Exception:
+        pass
+    return {}
+
+
 def gateway_lifecycle_block(
     *,
     command: str,
@@ -312,6 +345,7 @@ def gateway_lifecycle_block(
         command,
         cwd=guard_cwd,
         read_remote_script=lambda p: _read_script_for_guard(env, guard_cwd, p, _MAX_REFERENCED_SCRIPT_BYTES),
+        **_lifecycle_scan_kwargs(scan_gateway_lifecycle, env, guard_cwd),
     )
     if unsafe and refusal:
         # Not a lifecycle command: a script the command EXECUTES could not be scanned (budget,

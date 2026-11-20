@@ -38,9 +38,19 @@ def test_allowlisted_name_function_heredoc_stays_visible(tmp_path):
 
 
 def test_unquoted_heredoc_body_path_still_walked(tmp_path):
-    """An expansion-capable body is not provably inert: the walk still sees it and fails closed."""
+    """An expansion-capable body is not provably inert: the walk still sees it and fails closed.
+    4handy #14: the bare path must be executable to count as a program (see the next test)."""
     big = _big_file(tmp_path)
+    big.chmod(0o755)
     assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is True
+
+
+def test_unquoted_heredoc_body_non_executable_path_is_data(tmp_path):
+    """4handy #14: the kernel never execs a file without an execute bit, so an unscannable
+    non-executable bare path is data, not a fail-closed verdict."""
+    big = _big_file(tmp_path)
+    big.chmod(0o644)
+    assert guard(f"cat > /tmp/x <<EOF\n{big}\nEOF", cwd=str(tmp_path)) is False
 
 
 def test_inert_heredoc_body_script_path_still_read(tmp_path):

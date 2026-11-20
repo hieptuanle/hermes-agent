@@ -293,6 +293,32 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/cron/test_cron_migrated_toolsets.py` (3 fail with the call removed), plus `tests/cron/` (all)
   and `tests/hermes_cli/test_left_core_camofox.py`.
 
+## Lifecycle guard: unscannable data files named in a command no longer fail closed
+
+- `cron/lifecycle_guard.py`: referenced-script candidates carry a kind. `program` = handed to a shell
+  (`source x`, `. x`, `bash|sh|... x`, also behind `sudo`/`env`/`timeout`): an unscannable one (over 1 MiB,
+  budget) still always blocks, whatever its extension or mode. `exec` = a bare path in command position: an
+  unscannable one blocks only when it is executable or its mode is unknown (`_local_data_file`: `stat`, no
+  open; `_remote_data_file`: new optional `scan_gateway_lifecycle(is_remote_executable=...)` probe, charged to
+  the remote-read budget). Inside a kernel-executed program whose shebang names a non-shell interpreter
+  (`_is_non_shell_program_text`), paths are walked as mentions (read and scanned when readable, never a
+  fail-closed verdict); the program itself and `bash x` (which ignores the shebang) stay executed.
+- `tools/terminal_tool_guards.py`: `_is_executable_for_guard` (host `stat` first, else `test -x` on the backend;
+  unknown = `None`), passed only when the loaded guard module accepts it (`_lifecycle_scan_kwargs`), so a running
+  gateway that imported the older guard never gets a TypeError.
+- Why: Python/JS code tokenized as shell (`python - <<'PY'` bodies not masked because the line has `$(`,
+  `node -` heredocs, `python -c` inside `$(...)`, a node bundle's path strings) put JSON data paths in command
+  position; a >1 MiB file (or the 64 remote reads) failed the guard closed and blocked the whole command. 14
+  blocks 15-20/11 (kyduyenbot 10 incl. its e-invoice cron, long_d2_bot 2, baolinhbot 1, huyhoangbot 1).
+- Only relaxes verdicts: a readable referenced file is scanned exactly as before; literal lifecycle commands in
+  any text still block.
+- Rollback: reset the branch to the commit before this patch (cron workers load it from disk at once; chat
+  turns after a gateway restart).
+- Tests: `tests/cron/test_lifecycle_guard_data_args.py` (33; the 20/11 shapes, programs and bypasses), plus every
+  test file naming the guard, `terminal_tool_guards` or `shell_heredoc`. Upstream test changed:
+  `test_lifecycle_guard_heredoc_walk.py::test_unquoted_heredoc_body_path_still_walked` now makes its 2 MiB file
+  executable (the walk still sees the body and fails closed); its 0644 twin passes as data.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

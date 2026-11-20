@@ -302,6 +302,8 @@ _PIPE_TO_INTERPRETER = re.compile(
 _BINARY_SNIFF_BYTES = 4096
 
 _ReadRemoteScriptFn = Callable[[str], Optional[str]]
+# Backend probe for a path's execute bit (``test -x``): True/False, or None when unknown.
+_IsRemoteExecutableFn = Callable[[str], Optional[bool]]
 
 # Wrappers that hand execution to their argument tail: the real command sits further right, so a
 # first-token-only guard would let `sudo bash ~/restart.sh` / `sudo launchctl submit ...` walk past.
@@ -879,8 +881,45 @@ def _iter_option_values(segment: list[str], start: int, option: str) -> Iterator
             yield token[len(prefix):]
 
 
+# Candidate kinds (4handy local patch #14). ``program``: the path is handed to a shell as the
+# program (``source x``, ``. x``, ``bash x``): it runs whatever its mode or extension, so an
+# unscannable one always fails closed. ``exec``: a bare path in command position. The kernel only
+# executes such a path when it has an execute bit, so an unscannable file WITHOUT one is data (the
+# usual source: a path in Python/JS code that the shell tokenizer split at ``(``), never a block.
+_KIND_PROGRAM = "program"
+_KIND_EXEC = "exec"
+
+# Interpreters whose source is not shell: inside such a file, "command position" is an artifact of
+# tokenizing foreign syntax, so the paths found there are walked as mentions (still read and
+# scanned when readable; never a fail-closed verdict). The file itself stays a program.
+def _is_non_shell_program_text(text: Optional[str]) -> bool:
+    """True when *text* starts with a shebang naming an interpreter that is not a POSIX shell."""
+    if not text or not text.startswith("#!"):
+        return False
+    words = text[2:].split("\n", 1)[0].split()
+    if not words:
+        return False
+    interpreter = _executable_name(words[0])
+    if interpreter == "env":
+        # `#!/usr/bin/env [-S] [VAR=v ...] node --flag`: the first word that is not an option or an
+        # assignment names the interpreter.
+        rest = [w for w in words[1:] if not (w.startswith("-") or _ENV_ASSIGNMENT.match(w))]
+        if not rest:
+            return False
+        interpreter = _executable_name(rest[0])
+    return bool(interpreter) and interpreter not in _SHELL_EXECUTABLES
+
+
 def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterator[Path]:
     """Yield the scripts the token at *index* executes, if any."""
+    for path, _kind in _references_with_kind_at(segment, index, cwd):
+        yield path
+
+
+def _references_with_kind_at(
+    segment: list[str], index: int, cwd: Optional[str],
+) -> Iterator[tuple[Path, str]]:
+    """``(path, kind)`` for each script the token at *index* executes (kinds above)."""
     if index >= len(segment):
         return
     executable = segment[index]
@@ -888,7 +927,7 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
 
     if executable_name in {".", "source"}:
         if len(segment) > index + 1:
-            yield from _resolved_or_nothing(segment[index + 1], cwd)
+            yield from ((p, _KIND_PROGRAM) for p in _resolved_or_nothing(segment[index + 1], cwd))
         return
 
     if executable_name in _SHELL_EXECUTABLES:
@@ -909,27 +948,35 @@ def _references_at(segment: list[str], index: int, cwd: Optional[str]) -> Iterat
                 continue
             break
         if arg_index < len(arguments) and arguments[arg_index] not in _SHELL_COMMAND_FLAGS:
-            yield from _resolved_or_nothing(arguments[arg_index], cwd)
+            yield from ((p, _KIND_PROGRAM) for p in _resolved_or_nothing(arguments[arg_index], cwd))
         return
 
     # A bare "/" is pathlib's division operator in Python sources, not an executable; resolving it
     # hits the filesystem root and fails the regular-file check, hard-blocking innocent .py scripts.
     if executable.strip("/") and ("/" in executable or executable.endswith((".sh", ".bash", ".zsh"))):
-        yield from _resolved_or_nothing(executable, cwd)
+        yield from ((p, _KIND_EXEC) for p in _resolved_or_nothing(executable, cwd))
 
 
 def _iter_referenced_shell_scripts(command: str, *, cwd: Optional[str] = None) -> Iterator[Path]:
     """Yield scripts executed directly or through a POSIX shell. Each segment is read at the
     original token AND at the peeled wrapper target — additive on purpose: peeling must never REMOVE
     a reference (a local ``./timeout`` is a script, not the coreutils wrapper)."""
+    for path, _kind in _iter_referenced_scripts_with_kind(command, cwd=cwd):
+        yield path
+
+
+def _iter_referenced_scripts_with_kind(
+    command: str, *, cwd: Optional[str] = None,
+) -> Iterator[tuple[Path, str]]:
+    """``_iter_referenced_shell_scripts`` with each path's kind (``_KIND_PROGRAM``/``_KIND_EXEC``)."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
             continue
-        yield from _references_at(segment, index, cwd)
+        yield from _references_with_kind_at(segment, index, cwd)
         peeled = _peel_transparent_prefixes(segment, index)
         if peeled != index:
-            yield from _references_at(segment, peeled, cwd)
+            yield from _references_with_kind_at(segment, peeled, cwd)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
@@ -1090,9 +1137,37 @@ def _read_script_for_scanning(script_path: str) -> tuple[str, Optional[str]]:
 
 # --- recursive walk ---------------------------------------------------------------------------
 
+def _local_data_file(path: Path) -> bool:
+    """A regular file with no execute bit: the kernel will not exec it, so as a bare path in command
+    position it is data. ``stat`` only (never ``open``: a live SQLite file must not be opened)."""
+    try:
+        metadata = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISREG(metadata.st_mode) and not metadata.st_mode & 0o111
+
+
+def _remote_data_file(
+    path: Path, budget: _LifecycleScanBudget, is_remote_executable: Optional[_IsRemoteExecutableFn],
+) -> bool:
+    """Backend twin of ``_local_data_file``: True only when the backend says the file is NOT
+    executable. Unknown (no callback, budget spent, probe failed) is never data."""
+    if is_remote_executable is None or not budget.charge_remote_read():
+        return False
+    try:
+        return is_remote_executable(str(path)) is False
+    except Exception:
+        return False
+
+
+def _skip_unscannable_data(path: Path, why: str) -> None:
+    logger.info("lifecycle guard: %s is unscannable (%s) but not executable; treated as data", path, why)
+
+
 def _contains_unsafe_gateway_action(
     command: str, *, cwd: Optional[str], depth: int, visited: set[Path], budget: _LifecycleScanBudget,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None, executed: bool = True,
+    is_remote_executable: Optional[_IsRemoteExecutableFn] = None,
 ) -> bool:
     """``executed=False`` means *command* is the content of a file that is only MENTIONED in inert
     (masked) text: it is still scanned for a literal lifecycle command, but "could not scan" (budget,
@@ -1109,6 +1184,7 @@ def _contains_unsafe_gateway_action(
         return _contains_unsafe_gateway_action(
             text, cwd=cwd, depth=depth + 1, visited=visited, budget=budget,
             read_remote_script=read_remote_script, executed=executed,
+            is_remote_executable=is_remote_executable,
         )
 
     # The walks below must see the same masked view `_direct_lifecycle_scan` sees (#110422): a
@@ -1126,11 +1202,13 @@ def _contains_unsafe_gateway_action(
     # `/x/restart.sh` to os.system() executes it. Only the fail-closed verdicts (cloud placeholder,
     # oversized/binary, budget) stay restricted to the executed view — a mere data mention must not
     # trip them. Executed candidates come first so a mention never starves a real script's budget.
-    candidates = [(path, executed) for path in _iter_referenced_shell_scripts(walk_command, cwd=cwd)]
+    candidates = [(path, executed, kind)
+                  for path, kind in _iter_referenced_scripts_with_kind(walk_command, cwd=cwd)]
     if walk_command != command:
-        candidates += [(path, False) for path in _iter_referenced_shell_scripts(command, cwd=cwd)]
+        candidates += [(path, False, kind)
+                       for path, kind in _iter_referenced_scripts_with_kind(command, cwd=cwd)]
 
-    for script_path, candidate_executed in candidates:
+    for script_path, candidate_executed, kind in candidates:
         # Do not touch a FileProvider path even to discover whether the file is hydrated.
         if _on_cloud_path(script_path):
             if candidate_executed:
@@ -1152,6 +1230,9 @@ def _contains_unsafe_gateway_action(
         # remainder fails closed exactly like an oversized one.
         script_text, unsafe = _read_referenced_script(script_path, max_bytes=budget.bytes_remaining)
         if unsafe:
+            if candidate_executed and kind == _KIND_EXEC and _local_data_file(script_path):
+                _skip_unscannable_data(script_path, "local")
+                continue
             if candidate_executed:
                 return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
             continue
@@ -1166,6 +1247,10 @@ def _contains_unsafe_gateway_action(
                 read_remote_script(str(script_path)), max_bytes=budget.bytes_remaining
             )
             if unsafe:
+                if candidate_executed and kind == _KIND_EXEC and _remote_data_file(
+                        script_path, budget, is_remote_executable):
+                    _skip_unscannable_data(script_path, "backend")
+                    continue
                 if candidate_executed:
                     return _refuse_unreadable(
                         budget, script_path,
@@ -1175,8 +1260,13 @@ def _contains_unsafe_gateway_action(
                 continue
         if not script_text:
             continue
+        # A path EXECUTED by the kernel runs under its shebang: a non-shell one (node/python/...) is
+        # still scanned for literal lifecycle commands, but paths in its source are mentions, not
+        # executed scripts (#14). `bash x` / `source x` ignore the shebang and run x as shell.
+        inner_executed = candidate_executed and not (
+            kind == _KIND_EXEC and _is_non_shell_program_text(script_text))
         # Relative references inside a script resolve against that script's directory, not the cwd.
-        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, candidate_executed):
+        if recurse(script_text, _resolve_script_directory(str(resolved)) or cwd, inner_executed):
             return True
     return False
 
@@ -1184,6 +1274,7 @@ def _contains_unsafe_gateway_action(
 def scan_gateway_lifecycle(
     command: str, *, cwd: Optional[str] = None,
     read_remote_script: Optional[_ReadRemoteScriptFn] = None,
+    is_remote_executable: Optional[_IsRemoteExecutableFn] = None,
 ) -> tuple[bool, Optional[str]]:
     """``(unsafe, refusal)``: *refusal* names a non-lifecycle reason the walk failed closed (budget,
     size, device, live SQLite, cloud) so callers can tell the model; ``None`` when the verdict is a
@@ -1202,7 +1293,7 @@ def scan_gateway_lifecycle(
     try:
         unsafe = _contains_unsafe_gateway_action(
             command, cwd=cwd, depth=0, visited=set(), budget=budget,
-            read_remote_script=read_remote_script,
+            read_remote_script=read_remote_script, is_remote_executable=is_remote_executable,
         )
         return unsafe, budget.refusal if unsafe else None
     except Exception:
