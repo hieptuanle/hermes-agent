@@ -465,6 +465,38 @@ def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]
     return result
 
 
+def _add_migrated_replacements(per_job: list[str], cfg: dict) -> list[str]:
+    """4handy local patch: a per-job ``enabled_toolsets`` naming a toolset that a left-core migration
+    replaced (``LeftCoreFeature.replaces_toolsets``, e.g. core ``browser`` -> plugin ``camofox``) also
+    gets the replacement toolsets. The one-time scope conversion (``_turn_off_replaced``) rewrote saved
+    platform lists and put the replaced name in ``agent.disabled_toolsets``, but never touched per-job
+    lists, so such a job silently lost the tools it asked for. Added only when this home ran that
+    conversion (``_left_core_scoped``) and the replacement is on here: not in ``agent.disabled_toolsets``
+    and not recorded off for the ``cron`` platform in ``known_plugin_toolsets``. A home without the
+    migration, or a job that already lists the replacement, is unchanged."""
+    try:
+        from agent.skill_utils import parse_config_string_list
+        from hermes_cli.left_core_migration import _SCOPED_KEY, LEFT_CORE, _marked
+    except Exception:  # pragma: no cover - never fail a run over a convenience
+        logger.debug("left-core migration lookup failed; per-job toolsets unchanged", exc_info=True)
+        return per_job
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    disabled = set(map(str, parse_config_string_list(agent_cfg.get("disabled_toolsets") or [])))
+    known = cfg.get("known_plugin_toolsets") if isinstance(cfg.get("known_plugin_toolsets"), dict) else {}
+    cron_off = set(map(str, known.get("cron"))) if isinstance(known.get("cron"), list) else set()
+    names = set(map(str, per_job))
+    result = list(per_job)
+    for feature in LEFT_CORE:
+        if not feature.replaces_toolsets or not feature.toolsets or names.isdisjoint(feature.replaces_toolsets):
+            continue
+        if not _marked(cfg, _SCOPED_KEY, feature):
+            continue
+        if not (disabled | cron_off).isdisjoint(feature.toolsets):
+            continue
+        result += [ts for ts in feature.toolsets if ts not in result]
+    return result
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
     """Toolset list for a cron job. Precedence: per-job ``enabled_toolsets`` (+ MCP merge) >
     ``cron`` platform config (``_get_platform_tools``, which strips _DEFAULT_OFF_TOOLSETS so fresh
@@ -488,7 +520,8 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str]:
             # Explicit zero: no toolsets at all — no MCP merge either, else every enabled server
             # would ride back in and widen the allowlist the operator just emptied (#82010).
             return []
-        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
+        per_job = _add_migrated_replacements(list(per_job), cfg or {})
+        return _merge_mcp_into_per_job_toolsets(per_job, cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))

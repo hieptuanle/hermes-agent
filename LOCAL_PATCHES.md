@@ -276,6 +276,23 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Rollback: reset the branch to the commit before this patch and restart the gateways.
 - Tests: `tests/cron/test_cron_retry_hint.py`, plus `tests/cron/` (all).
 
+## Per-job cron toolsets follow a left-core migration's `replaces_toolsets`
+
+- `cron/scheduler.py::_add_migrated_replacements`, called from `_resolve_cron_enabled_toolsets` for a per-job
+  `enabled_toolsets` list (before the MCP merge): for every `LEFT_CORE` feature with `replaces_toolsets`, when
+  the job names a replaced toolset, the home ran that feature's scope conversion (`_left_core_scoped`) and the
+  replacement is on there (not in `agent.disabled_toolsets`, not off for `cron` in `known_plugin_toolsets`),
+  append the feature's `toolsets`. Generic; today only camofox (`browser` -> `camofox`).
+- Why: the camofox conversion (`_turn_off_replaced`) put `browser` in `agent.disabled_toolsets` in 49 profiles
+  and rewrote saved platform lists, but never per-job lists, so a job listing `browser` silently had no browser
+  tools. 13 jobs were fixed by hand on 2026-11-19 (backups `jobs.json.bak-camofox-20261119`); this covers jobs
+  created or edited later. jobs.json is not rewritten; the replaced name stays (it is disabled anyway).
+- Unchanged: a home without the conversion (2 profiles), a job already listing the replacement, an explicit
+  empty list, jobs without a per-job list, `_resolve_cron_disabled_toolsets`.
+- Rollback: reset the branch to the commit before this patch and restart the gateways.
+- Tests: `tests/cron/test_cron_migrated_toolsets.py` (3 fail with the call removed), plus `tests/cron/` (all)
+  and `tests/hermes_cli/test_left_core_camofox.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
