@@ -265,6 +265,17 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/tools/test_skill_external_readonly.py` (18 fail with the guard forced off), plus the
   skill_manager / skill_usage / curator / background-review suites and `tests/ci/test_docs_drift.py`.
 
+## Cron runs retry a transient error before declaring failure
+
+- Hint: a RETRY clause in `cron/scheduler_prompt.py::_CRON_HINT`, between SILENT and FAILURE: on a transient
+  error (timeout, HTTP 429/5xx, `rateLimitExceeded`, connection reset) wait briefly and retry the same call up to
+  2 more times before treating it as a failure. Never retry auth/permission errors (401, a 403 that is not a rate
+  limit), validation errors or refusals (read-only shared skill, `AGENT_TOKEN_DENIED`). Prompt only, no config.
+- Why: 7 cron runs on 2026-11-19/20 ended `[CRON_FAILURE]` after one transient error (e.g. a 90 s query timeout
+  at call 22 of 150, a Gmail 403 `rateLimitExceeded`).
+- Rollback: reset the branch to the commit before this patch and restart the gateways.
+- Tests: `tests/cron/test_cron_retry_hint.py`, plus `tests/cron/` (all).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
