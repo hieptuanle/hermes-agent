@@ -105,3 +105,65 @@ def test_closed_loop_is_ignored():
     assert sched.try_register_running_job("job-e") is True
     sched.release_running_job("job-e")  # must not raise
     assert runner.persisted == []
+
+
+def test_fire_owner_entry_outlives_release_and_its_pop_persists(monkeypatch):
+    """run_one_job holds a ``_running_fire_owners`` entry around the body: a ``release_running_job``
+    inside the body leaves the job counted, so the count only reaches 0 when the fire owner pops."""
+    from unittest.mock import patch
+
+    loop = asyncio.new_event_loop()
+    try:
+        runner = FakeRunner()
+        _install_cron_release_persist(runner, loop)
+        seen = {}
+
+        def body(job, **_kw):
+            assert sched.try_register_running_job(job["id"]) is True
+            runner._persist_active_agents()  # owner drain mid-run
+            sched.release_running_job(job["id"])
+            _drain(loop)
+            seen["during"] = list(runner.persisted)
+            return True
+
+        with patch.object(sched, "_launch_external_cron_worker", return_value=False), \
+                patch.object(sched, "_run_with_fire_claim_heartbeat", side_effect=lambda j, fn: fn(None)), \
+                patch.object(sched, "_run_one_job_body", side_effect=body):
+            assert sched.run_one_job({"id": "job-f"}) is True
+        assert seen["during"][-1] == 1, seen  # the fire owner still holds the job after the release
+        _drain(loop)
+        assert runner.persisted[-1] == 0, runner.persisted  # the fire-owner pop re-persisted
+        assert "job-f" not in sched.get_running_job_ids()
+    finally:
+        loop.close()
+
+
+def test_release_from_another_thread_persists_on_the_loop_thread():
+    import threading
+
+    loop = asyncio.new_event_loop()
+    loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+    loop_thread.start()
+    try:
+        done = threading.Event()
+        threads = []
+
+        class ThreadRecordingRunner(FakeRunner):
+            def _persist_active_agents(self):
+                threads.append(threading.get_ident())
+                super()._persist_active_agents()
+                done.set()
+
+        runner = ThreadRecordingRunner()
+        _install_cron_release_persist(runner, loop)
+        assert sched.try_register_running_job("job-t") is True
+        worker = threading.Thread(target=sched.release_running_job, args=("job-t",))
+        worker.start()
+        worker.join(5)
+        assert done.wait(5), "persist never ran"
+        assert threads == [loop_thread.ident], (threads, loop_thread.ident, worker.ident)
+        assert runner.persisted == [0]
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(5)
+        loop.close()
