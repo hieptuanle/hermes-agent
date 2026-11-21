@@ -409,6 +409,15 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/cron/test_lifecycle_guard_budget_data.py` (14; 4 fail on the old code), plus every test file
   naming the guard, `terminal_tool_guards` or `shell_heredoc`.
 
+- **P14-REMOTE diagnostics (2026-11-21, log only):** a block of an unscannable `exec` path now names, in the
+  WARNING log line only (`[...]` after the reason; the refusal text the model sees is unchanged), why the data
+  skip did not apply: `backend execute bit: executable | unknown | no backend probe | remote-read budget spent |
+  probe raised <Error>`, or `not probed: program reference`. `tools/terminal_tool_guards.py::_is_executable_for_guard`
+  logs (INFO) a probe that gave no yes/no answer (returncode other than 0/1, with 120 chars of output, or an
+  exception). Why: long_d2_bot cron `b7985f7ac913` was blocked 21/11 17:09 on P14 code with a non-executable
+  1.7 MB JSON; replays of the guard and of `gateway_lifecycle_block` against the bot's container pass, so the
+  real probe answer is needed. Tests: `tests/cron/test_lifecycle_guard_data_args.py` (P14-REMOTE section).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

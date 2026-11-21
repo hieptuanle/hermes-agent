@@ -589,8 +589,10 @@ def _unreadable_reason(path: Path) -> str:
     return f"`{path}` is larger than the scan cap ({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget"
 
 
-def _refuse_unreadable(budget: _LifecycleScanBudget, path: Path, reason: str) -> bool:
-    logger.warning("lifecycle guard cannot scan referenced script %s: %s; failing closed", path, reason)
+def _refuse_unreadable(budget: _LifecycleScanBudget, path: Path, reason: str, detail: str = "") -> bool:
+    """*detail* goes to the log only (why the data skip did not apply), never to the refusal."""
+    logger.warning("lifecycle guard cannot scan referenced script %s: %s%s; failing closed", path, reason,
+                   f" [{detail}]" if detail else "")
     budget.refusal = reason
     return True
 
@@ -1158,18 +1160,33 @@ def _local_data_file(path: Path) -> bool:
     return stat.S_ISREG(metadata.st_mode) and not metadata.st_mode & 0o111
 
 
+def _remote_exec_status(
+    path: Path, budget: _LifecycleScanBudget, is_remote_executable: Optional[_IsRemoteExecutableFn],
+) -> str:
+    """What the backend said about *path*'s execute bit: ``not executable`` (data), ``executable``,
+    ``unknown`` (probe answered None), ``no backend probe``, ``remote-read budget spent`` or ``probe
+    raised <Error>``. Only ``not executable`` is data; the others fail closed and are named in the
+    refusal log so a block explains itself (P14-REMOTE, long_d2_bot 2026-11-21)."""
+    if is_remote_executable is None:
+        return "no backend probe"
+    if not budget.charge_remote_read():
+        return "remote-read budget spent"
+    try:
+        answer = is_remote_executable(str(path))
+    except Exception as exc:
+        return f"probe raised {type(exc).__name__}"
+    if answer is False:
+        return "not executable"
+    return "executable" if answer is True else "unknown"
+
+
 def _remote_data_file(
     path: Path, budget: _LifecycleScanBudget, is_remote_executable: Optional[_IsRemoteExecutableFn],
 ) -> bool:
     """Backend twin of ``_local_data_file``: True only when the backend says the file is NOT
     executable. Unknown (no callback, budget spent, probe failed) is never data. When a probe is
     given it is the only authority, also for a path the host has too (the host file may differ)."""
-    if is_remote_executable is None or not budget.charge_remote_read():
-        return False
-    try:
-        return is_remote_executable(str(path)) is False
-    except Exception:
-        return False
+    return _remote_exec_status(path, budget, is_remote_executable) == "not executable"
 
 
 def _skip_unscannable_data(path: Path, why: str) -> None:
@@ -1244,13 +1261,19 @@ def _contains_unsafe_gateway_action(
         if unsafe:
             # With a backend probe the command runs in that backend, whose file at this path may differ
             # from the host's (review P14 F1): only the backend's mode counts. No probe = local backend.
-            if candidate_executed and kind == _KIND_EXEC and (
-                    _remote_data_file(script_path, budget, is_remote_executable)
-                    if is_remote_executable is not None else _local_data_file(script_path)):
-                _skip_unscannable_data(script_path, "backend" if is_remote_executable else "local")
-                continue
+            status = ""
+            if candidate_executed and kind == _KIND_EXEC:
+                if is_remote_executable is not None:
+                    status = _remote_exec_status(script_path, budget, is_remote_executable)
+                    if status == "not executable":
+                        _skip_unscannable_data(script_path, "backend")
+                        continue
+                    status = f"backend execute bit: {status}"
+                elif _local_data_file(script_path):
+                    _skip_unscannable_data(script_path, "local")
+                    continue
             if candidate_executed:
-                return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path))
+                return _refuse_unreadable(budget, script_path, _unreadable_reason(script_path), status)
             continue
         if script_text is None and read_remote_script is not None:
             # Local path missing; the remote backend's output crosses the same trust boundary as a
@@ -1263,15 +1286,21 @@ def _contains_unsafe_gateway_action(
                 read_remote_script(str(script_path)), max_bytes=budget.bytes_remaining
             )
             if unsafe:
-                if candidate_executed and kind == _KIND_EXEC and _remote_data_file(
-                        script_path, budget, is_remote_executable):
-                    _skip_unscannable_data(script_path, "backend")
-                    continue
+                status = ""
+                if candidate_executed and kind == _KIND_EXEC:
+                    status = _remote_exec_status(script_path, budget, is_remote_executable)
+                    if status == "not executable":
+                        _skip_unscannable_data(script_path, "backend")
+                        continue
+                    status = f"backend execute bit: {status}"
+                elif candidate_executed:
+                    status = f"not probed: {kind} reference"
                 if candidate_executed:
                     return _refuse_unreadable(
                         budget, script_path,
                         f"`{script_path}` read from the backend exceeds the scan cap "
                         f"({_MAX_REFERENCED_SCRIPT_BYTES} bytes) or the remaining walk budget",
+                        status,
                     )
                 continue
         if not script_text:
