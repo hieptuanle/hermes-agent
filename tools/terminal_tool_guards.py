@@ -270,16 +270,18 @@ def _lifecycle_scan_kwargs(scan, env: Any, guard_cwd: str, env_type: Optional[st
     """Optional ``scan_gateway_lifecycle`` arguments the loaded guard module accepts: a gateway that
     imported an older ``cron.lifecycle_guard`` before an in-place update must not get a TypeError.
     The backend probe is passed only for a backend that is not the host (``env_type != "local"``); with no
-    probe the guard decides from the host's own file mode, which is the right file only for ``local``."""
+    probe the guard decides from the host's own file mode, which is the right file only for ``local``.
+    A scan whose signature cannot be read still gets the probe (review P14 nit 1): for a remote backend
+    the host stat must never decide, and a guard that rejects the keyword fails closed."""
     if env is None or env_type == "local":
         return {}
+    probe = {"is_remote_executable": lambda p: _is_executable_for_guard(env, guard_cwd, p)}
     try:
         import inspect
-        if "is_remote_executable" in inspect.signature(scan).parameters:
-            return {"is_remote_executable": lambda p: _is_executable_for_guard(env, guard_cwd, p)}
+        params = inspect.signature(scan).parameters
     except Exception:
-        pass
-    return {}
+        return probe
+    return probe if "is_remote_executable" in params else {}
 
 
 def gateway_lifecycle_block(
