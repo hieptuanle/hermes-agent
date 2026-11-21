@@ -322,6 +322,15 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `test_lifecycle_guard_heredoc_walk.py::test_unquoted_heredoc_body_path_still_walked` now makes its 2 MiB file
   executable (the walk still sees the body and fails closed); its 0644 twin passes as data.
 
+## A missing configured cwd warns once per value (CWD-NOISE)
+
+- Why: on container-configured bots `terminal.cwd` is the container path (`/workspace`). `agent/runtime_cwd.py`
+  checks it on the host, where it never exists, and logged `TERMINAL_CWD does not exist: /workspace` on every
+  resolution, about every 2 s per bot (vybot 21k lines since rotation, kyduyenbot 38k).
+- Change: `_existing_dir` warns once per (label, value) per process (bounded set of 256), then logs at debug. The
+  result is unchanged: None, with the same launch-dir fallback. No behaviour change beyond the log level.
+- Tests: `tests/agent/test_runtime_cwd_warn_once.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

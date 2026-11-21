@@ -75,11 +75,27 @@ def scope_terminal_cwd() -> str:
     return terminal_env("TERMINAL_CWD", "")
 
 
+# 4handy local patch: a container/remote backend's configured cwd (``/workspace``) is checked here
+# on the host, where it never exists. The answer is the same every call (None -> launch-dir
+# fallback), but the warning fired on every resolution: ~one line every 2 s per container bot
+# (vybot 21k lines since rotation). Warn once per (label, value) per process, then debug.
+_WARNED_MISSING: set[tuple[str, str]] = set()
+_WARNED_MISSING_MAX = 256
+
+
 def _existing_dir(raw: str, label: str) -> Path | None:
     p = Path(raw).expanduser()
     if p.is_dir():
         return p
-    logger.warning("%s does not exist: %s", label, raw)
+    key = (label, raw)
+    if key in _WARNED_MISSING:
+        logger.debug("%s does not exist: %s", label, raw)
+    else:
+        if len(_WARNED_MISSING) < _WARNED_MISSING_MAX:
+            _WARNED_MISSING.add(key)
+        logger.warning(
+            "%s does not exist: %s (logged once per value; a container or remote path is checked "
+            "on the Hermes host)", label, raw)
     return None
 
 
