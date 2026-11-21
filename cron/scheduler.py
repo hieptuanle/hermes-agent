@@ -337,13 +337,36 @@ def _failure_repeat_alert_hours() -> float:
     return _cron_config_number("failure_repeat_alert_hours", DEFAULT_FAILURE_REPEAT_ALERT_HOURS, float)
 
 
+DEFAULT_DECLARED_REPEAT_ALERT_MINUTES = 60.0
+
+
+def _declared_repeat_alert_minutes() -> float:
+    """``cron.declared_repeat_alert_minutes`` (4handy local patch): how long an agent-declared
+    incident (keyed on job + failing step, not on the text) stays silent after its last ping. Its
+    key is coarse (a Vietnamese explanation usually classifies ``unknown``, so job-only), so the
+    window is short: a different failure of the same job surfaces within it. ``0`` = every run."""
+    from cron.jobs import _cron_config_number
+
+    return _cron_config_number(
+        "declared_repeat_alert_minutes", DEFAULT_DECLARED_REPEAT_ALERT_MINUTES, float)
+
+
 def _repeat_alert_withheld(incident: dict) -> bool:
     """An ``alerted`` incident withholds the per-run ping until the reminder cooldown has elapsed
     since its last ping. A missing/unparseable ``alerted_at`` (ledger written before the column
-    existed) delivers rather than swallowing an alert."""
+    existed) delivers rather than swallowing an alert. Agent-declared incidents use the shorter
+    ``cron.declared_repeat_alert_minutes`` window (never longer than the reminder cooldown)."""
     hours = _failure_repeat_alert_hours()
     if hours <= 0:
         return False
+    window = hours * 3600
+    from cron.incidents import DECLARED_SIG_PREFIX
+
+    if str(incident.get("error_sig") or "").startswith(DECLARED_SIG_PREFIX):
+        minutes = _declared_repeat_alert_minutes()
+        if minutes <= 0:
+            return False
+        window = min(window, minutes * 60)
     alerted_at = incident.get("alerted_at")
     if not alerted_at:
         return False
@@ -353,22 +376,24 @@ def _repeat_alert_withheld(incident: dict) -> bool:
         last = _ensure_aware(datetime.fromisoformat(str(alerted_at)))
     except (TypeError, ValueError):
         return False
-    return _elapsed_seconds(_hermes_now(), last) < hours * 3600
+    return _elapsed_seconds(_hermes_now(), last) < window
 
 
 def _upsert_incident_for_failure(
-    job: dict, error: str, *, output_file: Optional[Any] = None
+    job: dict, error: str, *, output_file: Optional[Any] = None, agent_declared: bool = False,
 ) -> tuple[bool, Optional[str]]:
     """Record a durable failure incident (grouped by job + error signature). Returns
     ``(withheld, incident_id)``; withheld=True when the signature's incident is already ``closed``
     (operator ack) or ``alerted`` inside the ``cron.failure_repeat_alert_hours`` cooldown (a ping
     already went out) -> suppress the per-run ping. Store errors log at debug; the caller delivers
-    as if none existed."""
+    as if none existed. ``agent_declared``: the error is the agent's ``[CRON_FAILURE]`` evidence, so the
+    incident is keyed on job + failing step, not on the wording (4handy local patch)."""
     try:
         from cron.incidents import get_incident, upsert_incident
 
         incident_id, _is_new = upsert_incident(
-            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file)
+            job["id"], str(error or ""), job_name=job.get("name"), output_file=output_file,
+            declared=agent_declared)
         incident = get_incident(incident_id)
         state = incident.get("state") if incident else None
         withheld = state == "closed" or (state == "alerted" and _repeat_alert_withheld(incident))
@@ -3045,7 +3070,7 @@ def _compose_run_delivery(
         # already acked it (closed) or was already told (alerted, inside the reminder cooldown).
         # Best-effort: a ledger failure never breaks delivery.
         incident_acked, failure_incident_id = _upsert_incident_for_failure(
-            job, error or "", output_file=output_file
+            job, error or "", output_file=output_file, agent_declared=agent_declared
         )
         if incident_acked:
             deliver_content = ""
