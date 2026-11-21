@@ -45,8 +45,9 @@ def pipeline(monkeypatch):
             s, "mark_job_run",
             lambda jid, ok, err=None, delivery_error=None, **kw: rec["marks"].append((jid, ok, err)))
 
-        def upsert(job, error, *, output_file=None):
+        def upsert(job, error, *, output_file=None, agent_declared=False):
             rec["incidents"].append((job["id"], error))
+            rec.setdefault("declared", []).append(agent_declared)
             return acked, "inc-1"
 
         monkeypatch.setattr(s, "_upsert_incident_for_failure", upsert)
@@ -86,6 +87,7 @@ class TestVerbatim:
         assert rec["delivered"] == [EXPLANATION]
         assert rec["marks"] == [("job-cf-1", False, EXPLANATION)]
         assert rec["incidents"] == [("job-cf-1", EXPLANATION)]
+        assert rec["declared"] == [True]  # keyed on job + failing step, not the wording
 
     def test_no_english_wrapper_or_streak_nudge(self, home, pipeline):
         _set_mode(home, "verbatim")

@@ -322,6 +322,24 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `test_lifecycle_guard_heredoc_walk.py::test_unquoted_heredoc_body_path_still_walked` now makes its 2 MiB file
   executable (the walk still sees the body and fails closed); its 0644 twin passes as data.
 
+## Agent-declared failures dedup on job + failing step
+
+- Why: the incident ledger signs failures by their text. An agent-declared `[CRON_FAILURE]` is the bot's own
+  prose, worded differently every run, so each run minted a new incident and pinged again. huongtabot
+  `12b06a99607d` (*/5), late and unfinished on 2026-11-21, notified 7 times between 08:32 and 09:01.
+- Change: `cron/incidents.py::declared_failure_signature`, `d-<sha(job id + _classify_failure_type(text))>`, is
+  used by `upsert_incident(..., declared=True)`, which `cron/scheduler.py::_upsert_incident_for_failure`
+  passes from `_compose_run_delivery(agent_declared=...)`.
+  - One notice per job + failing step; repeats are withheld for `cron.failure_repeat_alert_hours` (6 h).
+  - The next successful run resolves the incident (its own delivery is the recovery message), so the next
+    streak alerts again.
+  - A different step class (e.g. auth after "unfinished") alerts once more.
+- An operator ack (`closed`) of a declared incident covers that streak only: `close_incidents_for_recovered_job`
+  also resolves `closed` rows whose `error_sig` starts with `d-`. Text-keyed acks stay terminal as before.
+- Runtime errors keep the text signature (unchanged).
+- Tests: `tests/cron/test_cron_declared_failure_dedup.py`, plus the `agent_declared` flag assertion in
+  `test_cron_declared_failure_delivery.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

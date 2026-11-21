@@ -134,6 +134,22 @@ def _error_signature(job_id: str, error: str) -> str:
     return hashlib.sha256(job_id.encode() + normalized.encode()).hexdigest()[:12]
 
 
+# 4handy local patch: an agent-declared ``[CRON_FAILURE]`` is the bot's own prose, different on every
+# run, so the text signature never matched and a job failing every 5 min pinged every 5 min (huongtabot
+# ``12b06a99607d``, 7 notices 08:32-09:01 on 2026-11-21). Declared failures are keyed on job + failing
+# step instead (the step = ``_classify_failure_type`` of the explanation). Hex text signatures never
+# start with this prefix.
+DECLARED_SIG_PREFIX = "d-"
+
+
+def declared_failure_signature(job_id: str, error: str) -> str:
+    """Dedup key for an agent-declared failure: stable for the same job + failing step, whatever
+    the wording of the explanation."""
+    kind = _classify_failure_type(error)
+    digest = hashlib.sha256(f"{job_id}\0declared\0{kind}".encode()).hexdigest()[:10]
+    return DECLARED_SIG_PREFIX + digest
+
+
 def _incident_id(job_id: str, error_sig: str) -> str:
     return f"{job_id[:6]}_{error_sig}"
 
@@ -155,15 +171,17 @@ def _classify_failure_type(error: str) -> str:
 
 def upsert_incident(
     job_id: str, error: str, *, job_name: Optional[str] = None, failure_type: Optional[str] = None,
-    output_file: Optional[str] = None,
+    output_file: Optional[str] = None, declared: bool = False,
 ) -> tuple[str, bool]:
     """Record (or refresh) the incident for ``job_id`` + ``error``; returns ``(incident_id,
     is_new)``. An existing row for the signature refreshes
     ``last_seen_at``/``error``/``output_file`` and keeps its state — a ``closed`` incident stays
     closed, while a ``resolved`` one (job recovered, then broke the same way again) re-opens as
-    ``detected`` so the operator is alerted once more. A changed error text mints a new incident."""
+    ``detected`` so the operator is alerted once more. A changed error text mints a new incident.
+    ``declared`` (an agent-declared ``[CRON_FAILURE]``): keyed on job + failing step instead of the
+    text, see ``declared_failure_signature``."""
     job_id = str(job_id or "")
-    sig = _error_signature(job_id, error)
+    sig = declared_failure_signature(job_id, error) if declared else _error_signature(job_id, error)
     stored_error = _redact_error(error)
     incident_id = _incident_id(job_id, sig)
     now = _hermes_now().isoformat()
@@ -246,13 +264,17 @@ def close_incidents_for_recovered_job(job_id: str) -> int:
     incidents`` showed dozens of "open" incidents for jobs that had been green for weeks (32 of 32 on
     one install). ``resolved`` is distinct from the operator's ``closed`` on purpose: a repeat of the
     same error re-opens a resolved incident and alerts again (see ``upsert_incident``), whereas
-    ``closed`` keeps that signature silent."""
+    ``closed`` keeps that signature silent.
+
+    4handy local patch: an operator ack of an agent-declared incident (job + failing step, not one
+    text) covers that failure streak only; the recovery resolves it too, so the next streak alerts."""
     now = _hermes_now().isoformat()
     with _transaction() as conn:
         cursor = conn.execute(
             """UPDATE cron_incidents SET state='resolved', closed_at=?
-               WHERE job_id=? AND state IN ('detected', 'alerted')""",
-            (now, str(job_id or "")),
+               WHERE job_id=? AND (state IN ('detected', 'alerted')
+                                   OR (state='closed' AND error_sig LIKE ?))""",
+            (now, str(job_id or ""), DECLARED_SIG_PREFIX + "%"),
         )
         return int(cursor.rowcount or 0)
 
