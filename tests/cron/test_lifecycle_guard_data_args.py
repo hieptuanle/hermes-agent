@@ -286,3 +286,77 @@ def test_host_file_big_readable_backend_copy_not_executable_passes(tmp_path):
     host = _local(tmp_path, "status", BIG, mode=0o755)  # host mode must not matter either way
     backend = Backend({str(host): (BIG, False)})
     assert scan(f"D=$(date) && python - <<'PY'\nopen('{host}')\nPY", backend, cwd=str(tmp_path)) == (False, None)
+
+
+# --- P14-REMOTE (long_d2_bot 2026-11-21): a block names why the data skip did not apply -----------
+
+def _raises(path):
+    raise RuntimeError("probe broke")
+
+
+@pytest.mark.parametrize("probe,status", [
+    (lambda p: True, "backend execute bit: executable"),
+    (lambda p: None, "backend execute bit: unknown"),
+    (_raises, "backend execute bit: probe raised RuntimeError"),
+])
+def test_remote_block_logs_the_probe_answer(caplog, probe, status):
+    backend = Backend({"/w/x.json": (BIG, False)})
+    with caplog.at_level("WARNING", logger="cron.lifecycle_guard"):
+        unsafe, refusal = lg.scan_gateway_lifecycle(
+            "/w/x.json", cwd="/w", read_remote_script=backend.read, is_remote_executable=probe)
+    assert unsafe and "scan cap" in refusal
+    assert f"[{status}]" in caplog.text
+    assert "backend execute bit" not in refusal  # log only; the model's refusal text is unchanged
+
+
+def test_remote_block_logs_a_spent_remote_read_budget(caplog, monkeypatch):
+    monkeypatch.setattr(lg, "_MAX_LIFECYCLE_SCAN_REMOTE_READS", 1)  # the read itself uses the only one
+    backend = Backend({"/w/x.json": (BIG, False)})
+    with caplog.at_level("WARNING", logger="cron.lifecycle_guard"):
+        unsafe, _ = scan("/w/x.json", backend, cwd="/w")
+    assert unsafe and "[backend execute bit: remote-read budget spent]" in caplog.text
+    assert backend.probes == []
+
+
+def test_remote_block_logs_a_missing_probe(caplog):
+    backend = Backend({"/w/x.json": (BIG, False)})
+    with caplog.at_level("WARNING", logger="cron.lifecycle_guard"):
+        unsafe, _ = scan("/w/x.json", backend, cwd="/w", probe=False)
+    assert unsafe and "[backend execute bit: no backend probe]" in caplog.text
+
+
+def test_remote_block_of_a_program_reference_says_it_was_not_probed(caplog):
+    backend = Backend({"/w/x.sh": (BIG, False)})
+    with caplog.at_level("WARNING", logger="cron.lifecycle_guard"):
+        unsafe, _ = scan("bash /w/x.sh", backend, cwd="/w")
+    assert unsafe and "[not probed: program reference]" in caplog.text
+    assert backend.probes == []
+
+
+def test_remote_data_skip_unchanged(caplog):
+    backend = Backend({"/w/x.json": (BIG, False)})
+    with caplog.at_level("INFO", logger="cron.lifecycle_guard"):
+        assert scan("/w/x.json", backend, cwd="/w") == (False, None)
+    assert "treated as data" in caplog.text and "failing closed" not in caplog.text
+
+
+@pytest.mark.parametrize("result,logged", [
+    ({"returncode": 130, "output": "[interrupted]"}, "returncode 130: [interrupted]"),
+    ({"output": "Error: No such container: abc"}, "returncode -1: Error: No such container"),
+])
+def test_backend_probe_logs_a_non_answer(caplog, result, logged):
+    class Env:
+        def execute(self, command):
+            return result
+    with caplog.at_level("INFO", logger="tools.terminal_tool"):
+        assert ttg._is_executable_for_guard(Env(), "/w", "/w/x.json") is None
+    assert logged in caplog.text
+
+
+def test_backend_probe_logs_an_exception(caplog):
+    class Env:
+        def execute(self, command):
+            raise TimeoutError("slow")
+    with caplog.at_level("INFO", logger="tools.terminal_tool"):
+        assert ttg._is_executable_for_guard(Env(), "/w", "/w/x.json") is None
+    assert "raised TimeoutError" in caplog.text
