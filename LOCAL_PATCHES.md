@@ -321,6 +321,11 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   test file naming the guard, `terminal_tool_guards` or `shell_heredoc`. Upstream test changed:
   `test_lifecycle_guard_heredoc_walk.py::test_unquoted_heredoc_body_path_still_walked` now makes its 2 MiB file
   executable (the walk still sees the body and fails closed); its 0644 twin passes as data.
+- Review nit 1 (follow-up): if `inspect.signature` of the scan cannot be read, `_lifecycle_scan_kwargs` still
+  passes the backend probe for a non-local backend. The host stat never decides for a remote backend, and a guard
+  that rejects the keyword fails closed. Test `test_unreadable_signature_still_gets_the_backend_probe`.
+- Nit 2 needs no change: the cron prompt/script pre-check is host-relative by design. Nit 3 (xargs, find -exec,
+  `$(cat x)`, `eval "$(cat x)"`, `python x.json`) is an upstream limit, unchanged by #14.
 
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 

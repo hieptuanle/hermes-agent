@@ -250,6 +250,20 @@ def test_probe_kwarg_only_for_a_guard_that_accepts_it():
         "is_remote_executable"}
 
 
+def test_unreadable_signature_still_gets_the_backend_probe(monkeypatch):
+    """Review P14 nit 1: if ``inspect.signature`` fails, a remote backend must not fall back to the host
+    stat; the probe is passed anyway (a guard that rejected it would raise and fail closed)."""
+    import inspect
+
+    def boom(_obj, *a, **kw):
+        raise ValueError("no signature")
+
+    monkeypatch.setattr(inspect, "signature", boom)
+    assert set(ttg._lifecycle_scan_kwargs(lg.scan_gateway_lifecycle, FakeEnv(0), "/w", "docker")) == {
+        "is_remote_executable"}
+    assert ttg._lifecycle_scan_kwargs(lg.scan_gateway_lifecycle, FakeEnv(0), "/w", "local") == {}
+
+
 @pytest.mark.parametrize("env_type,probe", [("local", False), ("docker", True), ("ssh", True), (None, True)])
 def test_probe_only_for_a_backend_that_is_not_the_host(env_type, probe):
     """Local backend: the host file IS the file that runs, so the guard uses the host mode (no probe)."""
