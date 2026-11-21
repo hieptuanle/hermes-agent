@@ -357,6 +357,15 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/cron/test_cron_declared_failure_dedup.py`, plus the `agent_declared` flag assertion in
   `test_cron_declared_failure_delivery.py`.
 
+## A missing configured cwd warns once per value (CWD-NOISE)
+
+- Why: on container-configured bots `terminal.cwd` is the container path (`/workspace`). `agent/runtime_cwd.py`
+  checks it on the host, where it never exists, and logged `TERMINAL_CWD does not exist: /workspace` on every
+  resolution, about every 2 s per bot (vybot 21k lines since rotation, kyduyenbot 38k).
+- Change: `_existing_dir` warns once per (label, value) per process (bounded set of 256), then logs at debug. The
+  result is unchanged: None, with the same launch-dir fallback. No behaviour change beyond the log level.
+- Tests: `tests/agent/test_runtime_cwd_warn_once.py`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
