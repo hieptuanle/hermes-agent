@@ -59,10 +59,23 @@ def pipeline(monkeypatch):
 class TestHint:
     def test_failure_clause_covers_own_failures(self):
         for phrase in ("[CRON_FAILURE]", "first line by itself", "script or command it depends on failed",
-                       "exited non-zero", "timed out", "not produced or not sent",
+                       "exited non-zero", "timed out", "a required file, sheet or report was not produced",
                        "a delegated child failed", "never translated", "language this job normally uses",
-                       "that is [SILENT]", "partial results the task explicitly allows"):
+                       "that is [SILENT]", "partial results the task explicitly allows",
+                       "name the step or error that failed"):
             assert phrase in _CRON_HINT, phrase
+
+    def test_failure_clause_only_counts_messages_the_task_sends_with_a_tool(self):
+        # 2026-11-21 duongnhungbot ed6578c7c185: the prompt said "send" the question, the clause said
+        # an unsent message is a failure, so the bot returned [CRON_FAILURE] instead of the question
+        # the system would have delivered. Only tool sends the task asks for count.
+        failure = _CRON_HINT[_CRON_HINT.index("FAILURE:"):_CRON_HINT.index("RECURSION:")]
+        assert "message was not produced or not sent" not in failure
+        assert "could not produce or deliver" not in failure
+        assert "a message the task tells you to send with a tool" in failure
+        assert "Your final response is not such a message: the system delivers it" in failure
+        assert "never declare a failure because you cannot post or send it yourself" in failure
+        assert "write it as your final response instead" in failure
 
     def test_hint_keeps_other_clauses(self):
         assert "DELIVERY:" in _CRON_HINT and "SILENT:" in _CRON_HINT and "RECURSION:" in _CRON_HINT
