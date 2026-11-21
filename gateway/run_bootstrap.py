@@ -389,6 +389,18 @@ async def _start_gateway_start_control_socket(runner):
     return _control_server
 
 
+def _install_cron_release_persist(runner, loop):
+    """Point cron's running-release listener at this runner: the release happens on a cron thread,
+    so the persist is scheduled on the gateway loop (which owns the state it counts)."""
+    from cron.scheduler import set_running_release_listener
+
+    def _on_release():
+        if not loop.is_closed():
+            loop.call_soon_threadsafe(runner._persist_active_agents)
+
+    set_running_release_listener(_on_release)
+
+
 def _start_gateway_start_cron_and_housekeeping(runner):
     """Start the cron scheduler thread + gateway housekeeping thread; returns
     ``(cron_stop, cron_provider, cron_thread, housekeeping_thread)``."""
@@ -410,6 +422,8 @@ def _start_gateway_start_cron_and_housekeeping(runner):
     cron_provider = scheduler_for_profile_mode(
         resolve_cron_scheduler(), multiplex_profiles=len(cron_profile_homes) > 1)
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
+    # 4handy local patch: re-persist active_agents when a cron run is released (see cron.scheduler).
+    _install_cron_release_persist(runner, cron_start_kwargs["loop"])
 
     if isinstance(cron_provider, InProcessCronScheduler) and cron_profile_homes:
         # Live enumerator: the ticker re-reads profiles/ every cycle so a profile created while

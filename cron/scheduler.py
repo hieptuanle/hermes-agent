@@ -711,6 +711,30 @@ _INFLIGHT_MIN_ALLOWANCE_MINUTES = 30.0
 _interrupted_job_ids: set = set()
 
 
+# 4handy local patch: the gateway re-publishes its persisted ``active_agents`` when a cron run leaves
+# the in-flight set. ``GatewayRunner._active_work_count`` counts these runs, and the owner-side
+# persists (drain done-callback, tracked writes) fire while the run is still registered here; nothing
+# re-persisted after the release, so ``gateway_state.json`` kept reporting the finished run.
+_running_release_listener: Optional[Callable[[], None]] = None
+
+
+def set_running_release_listener(listener: Optional[Callable[[], None]]) -> None:
+    """Install (or clear, with None) the callback run after a cron run leaves the in-flight set.
+    Called outside ``_running_lock`` on the releasing thread; must be thread-safe and cheap."""
+    global _running_release_listener
+    _running_release_listener = listener
+
+
+def _notify_running_released() -> None:
+    listener = _running_release_listener
+    if listener is None:
+        return
+    try:
+        listener()
+    except Exception as exc:  # best-effort: a closed loop must never break cron bookkeeping
+        logger.debug("cron running-release listener failed: %s", exc)
+
+
 def get_running_job_ids() -> frozenset[str]:
     """Thread-safe snapshot of executing job IDs (dispatch until ``_process_job`` returns). Read by
     the gateway shutdown drain, otherwise blind to cron work (runs outside ``_running_agents``).
@@ -888,6 +912,7 @@ def release_running_job(
     with _running_lock:
         if owner is not None and _running_registration_owners.get(key) is not owner:
             return
+        released = key in _running_job_ids
         _running_registration_owners.pop(key, None)
         _running_job_ids.discard(key)
         _running_since.pop(key, None)
@@ -895,6 +920,8 @@ def release_running_job(
         _running_futures.pop(key, None)
         _running_worker_pids.pop(key, None)
         _scope_isolated_job_ids.discard(key)
+    if released:
+        _notify_running_released()
 
 
 def _inflight_min_allowance_minutes() -> float:
@@ -1147,6 +1174,8 @@ def sweep_stale_inflight(due_jobs: Optional[list] = None) -> list:
 
     for job_id, age, allowance, fut, _reason in stale:
         _record_stale_release(by_id.get(job_id) or {}, job_id, age, allowance, fut, _reason)
+    if stale:
+        _notify_running_released()
     return [s[0] for s in stale]
 
 
@@ -2953,12 +2982,16 @@ def run_one_job(
                     transport_cancel=cancel_event,
                     execution_token=execution_token))
     finally:
+        fire_released = False
         with _running_lock:
             executions = _running_fire_owners.get(_fire_key)
             if executions is not None:
                 executions.pop(execution_token, None)
                 if not executions:
                     _running_fire_owners.pop(_fire_key, None)
+                    fire_released = True
+        if fire_released:
+            _notify_running_released()
 
 
 _OWNERSHIP_LOST_INTERRUPTED = "Interrupted by shutdown before terminal completion."
