@@ -262,12 +262,12 @@ def _is_executable_for_guard(env: Any, guard_cwd: str, script_path: str) -> Opti
         result = env.execute(f"test -x {shlex.quote(script_path)}")
         code = result.get("returncode", -1)
     except Exception as exc:
-        logger.info("lifecycle guard: backend probe for %s raised %s", script_path, type(exc).__name__)
+        logger.warning("lifecycle guard: backend probe for %s raised %s", script_path, type(exc).__name__)
         return None
     if code in (0, 1):
         return code == 0
     # Not a yes/no answer (interrupted, container gone, timeout): say so, the guard then fails closed.
-    logger.info("lifecycle guard: backend probe for %s gave returncode %r: %.120s",
+    logger.warning("lifecycle guard: backend probe for %s gave returncode %r: %.120s",
                 script_path, code, str(result.get("output", "")).strip())
     return None
 
