@@ -4,9 +4,14 @@ huongtabot ``12b06a99607d`` (*/5) stayed late and unfinished on 2026-11-21: ever
 ``[CRON_FAILURE]`` with a freshly worded explanation, the incident ledger signed the text, so each run
 minted a new incident and the user got a notice every 5 minutes (7 between 08:32 and 09:01). Declared
 failures now share one incident per job + failing step (``_classify_failure_type`` of the explanation):
-one notice, repeats withheld for ``cron.failure_repeat_alert_hours``, and the next successful run
-resolves it so the next streak alerts again. Runtime errors keep the text signature.
+one notice, repeats withheld for ``cron.declared_repeat_alert_minutes`` (60, never longer than
+``cron.failure_repeat_alert_hours``), and the next successful run resolves it so the next streak alerts
+again. The window is short because Vietnamese prose mostly classifies ``unknown`` (job-only key), so a
+different failure of the same job must surface within it (hreview P16 F1). Runtime errors keep the text
+signature and the 6 h cooldown.
 """
+
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -135,3 +140,91 @@ def test_declared_signature_ignores_wording_but_not_job_or_step():
     assert sig("j1", LATE[0]) != sig("j1", AUTH)
     assert all(not incidents._error_signature("j1", t).startswith(incidents.DECLARED_SIG_PREFIX)
                for t in LATE + [AUTH])
+
+
+# hreview P16 F1 repro: different real failures of the same job after a LATE alert, all ``unknown``.
+OTHER_FAILURES = [
+    "Ghi Sheet thất bại: Sheets API trả 400 INVALID_ARGUMENT (thiếu cột Mã đơn).",
+    "Không gửi được tin Zalo cho khách: zca báo đăng nhập thất bại.",
+    "Lệnh xuất dữ liệu thoát mã 1: permission denied khi ghi file kết quả.",
+    "Kiểm tra định dạng dữ liệu không đạt nên đã dừng, không ghi gì.",
+]
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    state = {"now": datetime(2026, 11, 21, 8, 32, tzinfo=timezone(timedelta(hours=7)))}
+
+    def now():
+        return state["now"]
+
+    monkeypatch.setattr(sched, "_hermes_now", now)
+    monkeypatch.setattr(incidents, "_hermes_now", now)
+
+    def at(minutes):
+        state["now"] = datetime(2026, 11, 21, 8, 32, tzinfo=timezone(timedelta(hours=7))) + timedelta(
+            minutes=minutes)
+
+    return at
+
+
+def _config(ledger, **cron):
+    lines = "".join(f"  {k}: {v}\n" for k, v in {"declared_failure_delivery": "verbatim", **cron}.items())
+    (ledger / "config.yaml").write_text("cron:\n" + lines, encoding="utf-8")
+
+
+def test_hreview_repro_other_failures_classify_unknown_and_share_the_key(ledger):
+    sig = incidents.declared_failure_signature
+    assert {incidents._classify_failure_type(t) for t in OTHER_FAILURES} == {"unknown"}
+    assert {sig(JOB["id"], t) for t in OTHER_FAILURES + LATE[:1]} == {sig(JOB["id"], LATE[0])}
+
+
+def test_hreview_repro_a_different_failure_surfaces_within_the_short_window(ledger, clock):
+    clock(0)
+    assert _declared(LATE[0])[0] == LATE[0]
+    clock(10)
+    assert _declared(OTHER_FAILURES[0])[0] == ""  # inside the 60 min window
+    clock(61)
+    assert _declared(OTHER_FAILURES[1])[0] == OTHER_FAILURES[1]  # not held for 6 h
+    clock(70)
+    assert _declared(OTHER_FAILURES[2])[0] == ""
+    clock(125)
+    content, inc_id = _declared(OTHER_FAILURES[3])
+    assert content == OTHER_FAILURES[3]
+    assert incidents.get_incident(inc_id)["error"] == OTHER_FAILURES[3]
+
+
+def test_ck_streak_every_5_min_for_2_h_notifies_hourly(ledger, clock):
+    sent = []
+    for i in range(25):  # 08:32 .. 10:32, every 5 min
+        clock(5 * i)
+        if _declared(LATE[i % len(LATE)])[0]:
+            sent.append(5 * i)
+    assert sent == [0, 60, 120]
+
+
+def test_declared_window_zero_alerts_every_run(ledger, clock):
+    _config(ledger, declared_repeat_alert_minutes=0)
+    for i, text in enumerate(LATE):
+        clock(i)
+        assert _declared(text)[0] == text
+
+
+def test_declared_window_never_exceeds_the_reminder_cooldown(ledger, clock):
+    _config(ledger, failure_repeat_alert_hours=0.5, declared_repeat_alert_minutes=600)
+    clock(0)
+    assert _declared(LATE[0])[0] == LATE[0]
+    clock(20)
+    assert _declared(LATE[1])[0] == ""
+    clock(31)
+    assert _declared(LATE[2])[0] == LATE[2]
+
+
+def test_text_keyed_runtime_errors_keep_the_6_h_cooldown(ledger, clock):
+    clock(0)
+    first, _ = _runtime("Script exited 2: export failed")
+    assert first.strip()
+    clock(61)
+    assert _runtime("Script exited 2: export failed")[0] == ""
+    clock(6 * 60 + 1)
+    assert _runtime("Script exited 2: export failed")[0].strip()

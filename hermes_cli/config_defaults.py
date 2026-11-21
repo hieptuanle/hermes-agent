@@ -1870,6 +1870,12 @@ DEFAULT_CONFIG = {
         # English failure notice + streak nudge (upstream); "verbatim" = the agent's explanation
         # (lines after the marker) as-is. The run is recorded as failed either way.
         "declared_failure_delivery": "notice",
+        # 4handy local patch: an agent-declared [CRON_FAILURE] incident is keyed on job + failing
+        # step, which for prose explanations is often just the job, so its repeats stay silent only
+        # this many minutes (capped by failure_repeat_alert_hours); a different failure of the same
+        # job then surfaces within the window. 0 = every run. Keep in sync with
+        # cron.scheduler.DEFAULT_DECLARED_REPEAT_ALERT_MINUTES.
+        "declared_repeat_alert_minutes": 60,
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
