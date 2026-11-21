@@ -59,7 +59,7 @@ def pipeline(monkeypatch):
 class TestHint:
     def test_failure_clause_covers_own_failures(self):
         for phrase in ("[CRON_FAILURE]", "first line by itself", "script or command it depends on failed",
-                       "exited non-zero", "timed out", "a required file, sheet or report was not produced",
+                       "exited non-zero", "timed out", "a required file, sheet or report was not produced or not saved where the task says",
                        "a delegated child failed", "never translated", "language this job normally uses",
                        "that is [SILENT]", "partial results the task explicitly allows",
                        "name the step or error that failed"):
@@ -73,6 +73,7 @@ class TestHint:
         assert "message was not produced or not sent" not in failure
         assert "could not produce or deliver" not in failure
         assert "a message the task tells you to send with a tool" in failure
+        assert "a channel other than this job's own delivery" in failure  # not its deliver target
         assert "Your final response is not such a message: the system delivers it" in failure
         assert "never declare a failure because you cannot post or send it yourself" in failure
         assert "write it as your final response instead" in failure
