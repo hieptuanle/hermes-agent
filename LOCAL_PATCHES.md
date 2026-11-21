@@ -226,6 +226,11 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   message was not produced or not sent; a delegated child failed. Explanation follows in the job's language. Not
   for "nothing new" (`[SILENT]`) or partial results the task allows. Upstream only mentioned a failed delegated
   child, so models recorded failed runs as `ok`.
+- Reworded 2026-11-21 (report 31): a failed send counts only for a message the task tells the bot to send with a
+  tool (Zalo, email, a channel other than the job's own delivery); a file/sheet/report counts when not produced or
+  not saved where the task says (hreview N1/N2). The final response is never such a message: the system delivers it, so the
+  bot must write it rather than declare a failure because it cannot post it itself (duongnhungbot
+  `ed6578c7c185` returned `[CRON_FAILURE]` instead of its question). The bot also names the failing step or error.
 - Config `cron.declared_failure_delivery` (`cron/scheduler.py::_declared_failure_delivery_mode`, default
   `notice` in `hermes_cli/config_defaults.py`; unknown values = `notice`): `notice` = upstream
   (`generic_failure_notice` English wrapper + `_failure_streak_nudge`); `verbatim` = deliver the lines after the
