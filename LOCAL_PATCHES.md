@@ -378,7 +378,13 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   - 26 cron cases 16-22/11 (hungnguyenbot `74b07f132111` daily; khangbot, minhngocbot, kyduyenbot), plus
     4 in chat and 1 in a subagent.
 - Only keeps more envs alive, and only while a process runs. An exited or lost session no longer counts.
-- Rollback: reset the branch to the commit before this patch (cron workers load it from disk at once; chat turns
+- Review nit N1 (hreview 2026-11-22): a background process that never exits (`tail -f`, a dev server) now pins its
+  key's env until it exits or is killed.
+  - On docker this costs about nothing: the profile container runs anyway, and teardown of a non-`:ws:` key only
+    drops the handle.
+  - On Modal or another paid sandbox, the sandbox stays up.
+  - `:ws:` and owner-keyed envs already followed this rule.
+- Rollback: revert this commit (cron workers load it from disk at once; chat turns
   after a gateway restart).
 - Tests: `tests/tools/test_terminal_reaper_background_keepalive.py` (6; 3 fail on the old code), plus every test
   file naming `_cleanup_inactive_envs`, `_last_activity` or `has_active_processes`, and the
