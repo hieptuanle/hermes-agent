@@ -495,24 +495,35 @@ class _LifecycleScanBudget:
         self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
         self.refusal: Optional[str] = None
 
-    def charge_text(self, text: str) -> bool:
-        """Charge *text* before tokenization; False when it does not fit."""
+    def _measure_text(self, text: str) -> Optional[tuple[int, int]]:
+        """``(bytes, lines)`` *text* would cost, or None when it does not fit the remaining budget."""
         # UTF-8 is >= one byte per code point, so the char count is a free lower bound.
         if len(text) > self.bytes_remaining:
-            return False
+            return None
         encoded = len(text.encode("utf-8", errors="replace"))
         if encoded > self.bytes_remaining:
-            return False
+            return None
         lines = text.count("\n") + 1
         if lines > self.lines_remaining:
-            return False
+            return None
         # One huge token is the quadratic shlex case; bound the longest physical line (chars, a
         # lower bound on bytes — tight enough for a DoS bound without a per-line encode).
         longest = max((len(line) for line in text.split("\n")), default=0)
         if longest > _MAX_LIFECYCLE_SCAN_LINE_BYTES:
+            return None
+        return encoded, lines
+
+    def fits_text(self, text: str) -> bool:
+        """Whether ``charge_text(text)`` would succeed; charges nothing."""
+        return self._measure_text(text) is not None
+
+    def charge_text(self, text: str) -> bool:
+        """Charge *text* before tokenization; False when it does not fit."""
+        cost = self._measure_text(text)
+        if cost is None:
             return False
-        self.bytes_remaining -= encoded
-        self.lines_remaining -= lines
+        self.bytes_remaining -= cost[0]
+        self.lines_remaining -= cost[1]
         return True
 
     def charge_path(self) -> bool:
@@ -1264,6 +1275,16 @@ def _contains_unsafe_gateway_action(
                     )
                 continue
         if not script_text:
+            continue
+        # 4handy GUARD-BUDGET (2026-11-22): a file that READ fine but whose text would exhaust the walk
+        # budget (a one-line JSON over the 64 KiB line cap, or more text than the walk has left) is
+        # the #14 case too. A bare-path ("exec") reference the kernel cannot execute is data, so the
+        # same authority decides as for an unreadable file: the backend probe, else the local mode.
+        # Executable or unknown still fails closed in the recursion below; the text is never tokenized.
+        if candidate_executed and kind == _KIND_EXEC and not budget.fits_text(script_text) and (
+                _remote_data_file(script_path, budget, is_remote_executable)
+                if is_remote_executable is not None else _local_data_file(script_path)):
+            _skip_unscannable_data(script_path, "backend" if is_remote_executable else "local")
             continue
         # A path EXECUTED by the kernel runs under its shebang: a non-shell one (node/python/...) is
         # still scanned for literal lifecycle commands, but paths in its source are mentions, not
