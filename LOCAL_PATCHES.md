@@ -431,7 +431,17 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   restores the pre-#14 fail-closed verdict for an unscannable file. Package installs (`pip|npm|apt-get install`)
   do not match. Scannable files are unaffected.
 - Not covered (upstream limits, unchanged): a file created or overwritten in the same command (`tar x`, `cp` onto an
-  existing executable), and a mode change that runs after the exec (`./f & chmod …`).
+  existing executable), and a mode change that runs after the exec (`./f & chmod …`). Also (hreview nits
+  2026-11-22, documented, no code change):
+  - N1: a mode change inside a file run by an interpreter (`python3 fix.py`, `node fix.js`, `make -C d`, then
+    `./big`). Interpreter-run files are never candidates, so their text is not walked or matched (unlike
+    `bash setup.sh`, a `program` file, which is).
+  - N2: walk order is not run order. `sh -c` payloads are walked before the outer command's candidates, so in
+    `bash setup.sh; sh -c './big'` the payload's `./big` is judged before `setup.sh` sets the flag. A literal
+    `chmod` in the outer text is still seen first (the raw text is matched before any walk).
+  - N3: `install` behind a wrapper (`env install`, `timeout 5 install`, `command install`) is not matched. It is
+    the "overwritten in the same command" class anyway (`install` copies content), like `rsync -E` and
+    `git checkout`.
 - Rollback: revert this commit (cron workers load it from disk at once; chat turns after a gateway restart).
 - Tests: `tests/cron/test_lifecycle_guard_chmod.py` (34; 24 fail on the old code), plus every test file naming the
   guard, `terminal_tool_guards` or `shell_heredoc`.
