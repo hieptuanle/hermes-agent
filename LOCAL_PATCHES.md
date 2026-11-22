@@ -390,6 +390,25 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   file naming `_cleanup_inactive_envs`, `_last_activity` or `has_active_processes`, and the
   terminal/process-registry/docker test files.
 
+## Lifecycle guard: a readable data file whose text would exhaust the scan budget is data too
+
+- `cron/lifecycle_guard.py`: before walking a READ `exec`-kind candidate in an executed context, if its text
+  would not fit the remaining walk budget (`_LifecycleScanBudget.fits_text`: bytes, lines, or one line over the
+  64 KiB line cap; charges nothing), ask the same authority as the #14 data skip (backend `test -x` probe, else
+  local `stat`). Not executable → skipped as data, never tokenized. Executable, unknown, or no probe → walked as
+  before and fails closed with "the scan budget was exhausted (text at depth N)". `program` kinds
+  (`bash x`, `source x`) are never probed.
+- Why: #14 covered files the guard could not READ (over 1 MiB); a file under the read cap whose single JSON line
+  is over 64 KiB still failed closed at depth 1. `node - <<'NODE'` bodies are scanned as shell (node is not an
+  inert heredoc consumer), and so is an unterminated `python - <<'PY'`, so `readFileSync('/w/x.json')` /
+  `open('/w/x.json')` put the data path in command position. 2 cron runs blocked 22/11: hangngabot b4a3ab47d6d0
+  08:01 (bot retried, delivered) and baolinhbot 0409dd82a379 14:01 (bot gave up, [CRON_FAILURE]).
+- Only relaxes verdicts for non-executable files the kernel cannot exec; the DoS bound is unchanged (skipped text
+  is never tokenized or charged).
+- Rollback: revert this commit (cron workers load it from disk at once; chat turns after a gateway restart).
+- Tests: `tests/cron/test_lifecycle_guard_budget_data.py` (14; 4 fail on the old code), plus every test file
+  naming the guard, `terminal_tool_guards` or `shell_heredoc`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
