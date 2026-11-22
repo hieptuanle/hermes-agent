@@ -144,11 +144,13 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            # A workspace container is keyed by its digest, not the spawning task id: also keep it
-            # while any process it hosts is still running (stopping it would kill that process).
-            if process_registry.has_active_processes(task_id) or (
-                    _is_workspace_key(task_id)
-                    and process_registry._any_running(lambda s, key=task_id: s.task_id == key)):
+            # Envs are cached under the collapsed container key (``profile:<name>``, ``default``,
+            # ``<base>:ws:<digest>``), while ``has_active_processes`` matches the raw spawning owner (a
+            # cron/chat task id). So also keep a key while any process it hosts is still running (its
+            # session's ``task_id`` is that key): dropping the env orphans the process's poller, which
+            # then reports it "lost" although it keeps running (4handy ECOM-LOST, 2026-11-22).
+            if process_registry.has_active_processes(task_id) or process_registry._any_running(
+                    lambda s, key=task_id: s.task_id == key):
                 _last_activity[task_id] = current_time
     except ImportError:
         pass

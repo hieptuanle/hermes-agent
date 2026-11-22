@@ -322,6 +322,24 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
   `test_lifecycle_guard_heredoc_walk.py::test_unquoted_heredoc_body_path_still_walked` now makes its 2 MiB file
   executable (the walk still sees the body and fails closed); its 0644 twin passes as data.
 
+## Idle reaper keeps a container key alive while a background process it hosts runs
+
+- `tools/terminal_tool_lifecycle.py::_cleanup_inactive_envs`: the keep-alive refresh now also matches a running
+  process session's container key (`session.task_id`) for every env key, not only `<base>:ws:<digest>` keys.
+  `has_active_processes` (owner match, #120546) is unchanged and still checked first.
+- Why: persistent Docker caches the env under `profile:<name>` (or `default`), while a background process is
+  owned by the raw cron/chat task id. 300 s (`terminal.lifetime_seconds`) after the last foreground call, the
+  reaper dropped the env (persist mode: the container keeps running, only the handle goes). The process poller's
+  next `execute` then raised, and the still-running process was reported `lost` / `backend_lost`, exit -1.
+  - 26 cron cases 16-22/11 (hungnguyenbot `74b07f132111` daily; khangbot, minhngocbot, kyduyenbot), plus
+    4 in chat and 1 in a subagent.
+- Only keeps more envs alive, and only while a process runs. An exited or lost session no longer counts.
+- Rollback: reset the branch to the commit before this patch (cron workers load it from disk at once; chat turns
+  after a gateway restart).
+- Tests: `tests/tools/test_terminal_reaper_background_keepalive.py` (6; 3 fail on the old code), plus every test
+  file naming `_cleanup_inactive_envs`, `_last_activity` or `has_active_processes`, and the
+  terminal/process-registry/docker test files.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |
