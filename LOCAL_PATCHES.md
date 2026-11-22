@@ -417,6 +417,25 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/cron/test_lifecycle_guard_budget_data.py` (14; 4 fail on the old code), plus every test file
   naming the guard, `terminal_tool_guards` or `shell_heredoc`.
 
+## Lifecycle guard: no data skip once the command can change a file mode (GUARD-CHMOD)
+
+- `cron/lifecycle_guard.py`: `_LifecycleScanBudget.mode_change_seen`, walk-wide and sticky, is set when any
+  walked text (raw, heredoc bodies included) matches `_MODE_CHANGE_RE`: `chmod` in any spelling (`os.chmod`,
+  `fs.chmodSync`, `perl chmod`), `setfacl`, or `install` in command position (its default mode is 0755). From
+  then on the three data-skip sites (#14 local and backend, GUARD-BUDGET Fix A) never treat an `exec` candidate as
+  data and do not probe it. The block log names why: "not probed: the command can change file modes".
+- Why (hreview S1 on Fix A, 2026-11-22): the execute bit is read at scan time, so `chmod +x f && ./f` on a 0644 `f`
+  holding a lifecycle command was judged data and then run. The gap existed in #14 (over 1 MiB); Fix A extended it
+  to 64 KiB–1 MiB.
+- Deliberately broad: a false hit (an unrelated `chmod 600 key` in the same call, a path containing "chmod") only
+  restores the pre-#14 fail-closed verdict for an unscannable file. Package installs (`pip|npm|apt-get install`)
+  do not match. Scannable files are unaffected.
+- Not covered (upstream limits, unchanged): a file created or overwritten in the same command (`tar x`, `cp` onto an
+  existing executable), and a mode change that runs after the exec (`./f & chmod …`).
+- Rollback: revert this commit (cron workers load it from disk at once; chat turns after a gateway restart).
+- Tests: `tests/cron/test_lifecycle_guard_chmod.py` (34; 24 fail on the old code), plus every test file naming the
+  guard, `terminal_tool_guards` or `shell_heredoc`.
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

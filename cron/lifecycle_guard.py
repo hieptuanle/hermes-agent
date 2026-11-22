@@ -482,6 +482,7 @@ class _LifecycleScanBudget:
     __slots__ = (
         "bytes_remaining",
         "lines_remaining",
+        "mode_change_seen",
         "paths_remaining",
         "refusal",
         "remote_reads_remaining",
@@ -494,6 +495,9 @@ class _LifecycleScanBudget:
         self.paths_remaining = _MAX_LIFECYCLE_SCAN_PATHS
         self.remote_reads_remaining = _MAX_LIFECYCLE_SCAN_REMOTE_READS
         self.refusal: Optional[str] = None
+        # 4handy GUARD-CHMOD: walk-wide, sticky. Set once any walked text can change a file mode; from
+        # then on no exec candidate is "data" (its mode at scan time may not be its mode at run time).
+        self.mode_change_seen = False
 
     def _measure_text(self, text: str) -> Optional[tuple[int, int]]:
         """``(bytes, lines)`` *text* would cost, or None when it does not fit the remaining budget."""
@@ -1180,6 +1184,18 @@ def _remote_exec_status(
     return "executable" if answer is True else "unknown"
 
 
+# 4handy GUARD-CHMOD (hreview S1, 2026-11-22): the data skip (#14, GUARD-BUDGET) asks for a file's execute
+# bit at SCAN time, so `chmod +x f && ./f` on a 0644 `f` would be judged "data" and then run. Any walked text
+# that can change a mode (chmod in any spelling, incl. os.chmod/fs.chmodSync; setfacl; `install`, whose
+# default mode is 0755, in command position) disables the skip for the rest of the walk. Deliberately broad:
+# a false hit only restores the pre-#14 fail-closed verdict for an unscannable file.
+_MODE_CHANGE_RE = re.compile(
+    r"chmod|setfacl|(?:^|[;&|()`\n])\s*(?:sudo\s+(?:-\S+\s+)*)?(?:\S*/)?install\s",
+    re.IGNORECASE,
+)
+_MODE_CHANGE_STATUS = "not probed: the command can change file modes (chmod/install/setfacl)"
+
+
 def _remote_data_file(
     path: Path, budget: _LifecycleScanBudget, is_remote_executable: Optional[_IsRemoteExecutableFn],
 ) -> bool:
@@ -1206,6 +1222,9 @@ def _contains_unsafe_gateway_action(
         return _budget_exhausted(budget, "text", depth) if executed else False
     if _direct_lifecycle_scan(command):
         return True
+    # The raw text, heredoc bodies included (`os.chmod` in a python body counts), before any candidate.
+    if not budget.mode_change_seen and _MODE_CHANGE_RE.search(command):
+        budget.mode_change_seen = True
     if depth >= _MAX_REFERENCED_SCRIPT_DEPTH:
         return executed
 
@@ -1262,7 +1281,9 @@ def _contains_unsafe_gateway_action(
             # With a backend probe the command runs in that backend, whose file at this path may differ
             # from the host's (review P14 F1): only the backend's mode counts. No probe = local backend.
             status = ""
-            if candidate_executed and kind == _KIND_EXEC:
+            if candidate_executed and kind == _KIND_EXEC and budget.mode_change_seen:
+                status = _MODE_CHANGE_STATUS
+            elif candidate_executed and kind == _KIND_EXEC:
                 if is_remote_executable is not None:
                     status = _remote_exec_status(script_path, budget, is_remote_executable)
                     if status == "not executable":
@@ -1287,7 +1308,9 @@ def _contains_unsafe_gateway_action(
             )
             if unsafe:
                 status = ""
-                if candidate_executed and kind == _KIND_EXEC:
+                if candidate_executed and kind == _KIND_EXEC and budget.mode_change_seen:
+                    status = _MODE_CHANGE_STATUS
+                elif candidate_executed and kind == _KIND_EXEC:
                     status = _remote_exec_status(script_path, budget, is_remote_executable)
                     if status == "not executable":
                         _skip_unscannable_data(script_path, "backend")
@@ -1310,7 +1333,8 @@ def _contains_unsafe_gateway_action(
         # the #14 case too. A bare-path ("exec") reference the kernel cannot execute is data, so the
         # same authority decides as for an unreadable file: the backend probe, else the local mode.
         # Executable or unknown still fails closed in the recursion below; the text is never tokenized.
-        if candidate_executed and kind == _KIND_EXEC and not budget.fits_text(script_text) and (
+        if candidate_executed and kind == _KIND_EXEC and not budget.mode_change_seen and not budget.fits_text(
+                script_text) and (
                 _remote_data_file(script_path, budget, is_remote_executable)
                 if is_remote_executable is not None else _local_data_file(script_path)):
             _skip_unscannable_data(script_path, "backend" if is_remote_executable else "local")
