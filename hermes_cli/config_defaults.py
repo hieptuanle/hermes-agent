@@ -1876,6 +1876,11 @@ DEFAULT_CONFIG = {
         # job then surfaces within the window. 0 = every run. Keep in sync with
         # cron.scheduler.DEFAULT_DECLARED_REPEAT_ALERT_MINUTES.
         "declared_repeat_alert_minutes": 60,
+        # 4handy local patch (DELIVER-THREAD): platforms on which an explicit ``platform:<origin chat>``
+        # deliver target (no thread segment) re-attaches to the job's origin thread, like
+        # deliver=origin. Slack always does (upstream); add "mattermost" per profile to opt in.
+        # Keep in sync with cron.scheduler_delivery.DEFAULT_ORIGIN_THREAD_REATTACH_PLATFORMS.
+        "origin_thread_reattach_platforms": ["slack"],
     },
     # Kanban multi-agent coordination. The dispatcher ticks every N seconds, reclaims stale claims,
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per

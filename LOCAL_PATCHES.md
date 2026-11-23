@@ -446,6 +446,24 @@ then switch the server checkout by hand (see "Updater" below). This file's prese
 - Tests: `tests/cron/test_lifecycle_guard_chmod.py` (34; 24 fail on the old code), plus every test file naming the
   guard, `terminal_tool_guards` or `shell_heredoc`.
 
+## Cron: an explicit same-channel Mattermost target keeps the origin thread, opt-in (DELIVER-THREAD)
+
+- Problem: a job created inside a thread whose `deliver` (or `failure_deliver`) names the same chat with no thread
+  segment (`mattermost:<chat>`) posts at the channel root every run. In `_resolve_single_delivery_target`, the
+  explicit branch re-attaches the origin thread for Slack only (upstream f279f7fcf1, already in v0.19.1). The
+  "origin has thread_id … but delivery target lost it" warning also fired for targets in a DIFFERENT chat,
+  where no thread can apply (about half the fleet's lines).
+- Fix:
+  - `cron.origin_thread_reattach_platforms` (list or comma string, default `["slack"]`) names the platforms that
+    re-attach. Slack is always in. Add `mattermost` per profile to opt in: a same-chat target then resolves like
+    deliver=origin (thread, mirror and continuable seed follow the origin match).
+  - The warning now fires only for the origin chat. Another chat logs at debug.
+- Behaviour change only where a profile opts in: jobs that have posted at the root for weeks move into their
+  creation thread. Opt in per bot after the owner agrees. Per-job alternative without code: `deliver:
+  mattermost:<chat>:<thread>`.
+- Rollback: drop the config key (config is read per delivery), or revert this commit.
+- Tests: `tests/cron/test_cron_deliver_origin_thread.py` (18; 6 fail on the old code).
+
 ## Dropped at v0.23.1 (upstream has equivalent tested behaviour)
 
 | v0.19.1 local patch | Upstream replacement in v0.23.1 |

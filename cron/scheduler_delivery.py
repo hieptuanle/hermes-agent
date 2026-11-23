@@ -572,6 +572,26 @@ def _origin_thread_is_stale(origin: dict) -> bool:
     return bool(home_chat) and str(origin.get("chat_id")) == str(home_chat)
 
 
+# 4handy local patch (DELIVER-THREAD): an explicit ``platform:<origin chat>`` target with no thread
+# re-attaches to the origin thread on these platforms. Upstream does it for Slack only, so a Mattermost
+# job created inside a thread whose deliver names the same channel posted at the channel root.
+# ``cron.origin_thread_reattach_platforms`` (list) extends it per profile; Slack always stays in.
+DEFAULT_ORIGIN_THREAD_REATTACH_PLATFORMS = ("slack",)
+
+
+def _origin_thread_reattach_platforms() -> frozenset:
+    from cron.jobs import _cron_config_number
+
+    def _as_set(value) -> frozenset:
+        if isinstance(value, str):
+            value = value.split(",")
+        return frozenset(str(v).strip().lower() for v in (value or ()) if str(v).strip())
+
+    configured = _cron_config_number(
+        "origin_thread_reattach_platforms", DEFAULT_ORIGIN_THREAD_REATTACH_PLATFORMS, _as_set)
+    return configured | frozenset(DEFAULT_ORIGIN_THREAD_REATTACH_PLATFORMS)
+
+
 def _origin_delivery_thread(origin: dict):
     """The thread a deliver=origin job should use, stale stamps dropped."""
     if _origin_thread_is_stale(origin):
@@ -643,7 +663,7 @@ def _resolve_single_delivery_target(
             return None
         if (
             thread_id is None
-            and platform_key == "slack"
+            and platform_key in _origin_thread_reattach_platforms()
             and origin
             and str(origin.get("platform") or "").lower() == platform_key
             and str(origin.get("chat_id")) == str(chat_id)
@@ -1707,7 +1727,15 @@ def _prepare_target_delivery(
 
     origin = _resolve_origin(job) or {}
     origin_thread = origin.get("thread_id")
-    if origin_thread and not thread_id:
+    same_chat_as_origin = (
+        str(origin.get("platform") or "").lower() == str(platform_name).lower()
+        and str(origin.get("chat_id")) == str(chat_id))
+    if origin_thread and not thread_id and not same_chat_as_origin:
+        # A different chat never carries the origin thread: by design, not a lost thread.
+        logger.debug(
+            "Job '%s': delivering to %s:%s (not the origin chat; origin thread %s not applied)",
+            job["id"], platform_name, chat_id, origin_thread)
+    elif origin_thread and not thread_id:
         logger.warning(
             "Job '%s': origin has thread_id=%s but delivery target lost it (deliver=%s, target=%s)",
             job["id"], origin_thread, job.get("deliver", "local"), target)
